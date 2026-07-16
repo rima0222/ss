@@ -43,7 +43,7 @@ def init_db(path):
           updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
 
-        CREATE TABLE IF NOT EXISTS proxy_counters(
+        CREATE TABLE IF NOT EXISTS transport_usage(
           user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
           transport TEXT NOT NULL,
           rx_bytes INTEGER NOT NULL DEFAULT 0,
@@ -53,8 +53,7 @@ def init_db(path):
           PRIMARY KEY(user_id, transport)
         );
 
-        CREATE INDEX IF NOT EXISTS idx_users_state
-          ON users(paused,status,expire_date);
+        CREATE INDEX IF NOT EXISTS idx_users_state ON users(paused,status,expire_date);
         """)
         c.commit()
 
@@ -62,11 +61,11 @@ def init_db(path):
 def connect():
     if not _DB:
         raise RuntimeError("database not initialized")
-    c = sqlite3.connect(_DB, timeout=15, check_same_thread=False)
+    c = sqlite3.connect(_DB, timeout=20, check_same_thread=False)
     c.row_factory = sqlite3.Row
     c.execute("PRAGMA journal_mode=WAL")
     c.execute("PRAGMA synchronous=NORMAL")
-    c.execute("PRAGMA busy_timeout=15000")
+    c.execute("PRAGMA busy_timeout=20000")
     c.execute("PRAGMA foreign_keys=ON")
     try:
         yield c

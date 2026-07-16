@@ -1,6 +1,7 @@
 import fcntl
 import re
 import subprocess
+import time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -17,15 +18,22 @@ def locked():
         finally:
             fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
-def run(args, input_text=None, check=True):
-    result = subprocess.run(
-        args, input=input_text, text=True,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        timeout=20, check=False,
-    )
-    if check and result.returncode:
-        raise RuntimeError(result.stderr.strip() or result.stdout.strip())
-    return result
+def run(args, input_text=None, check=True, retries=3):
+    last = None
+    for attempt in range(retries):
+        result = subprocess.run(
+            args, input=input_text, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=30, check=False,
+        )
+        if result.returncode == 0 or not check:
+            return result
+        last = result
+        message = (result.stderr or result.stdout).lower()
+        if "cannot lock" not in message and "failure while writing" not in message:
+            break
+        time.sleep(1 + attempt)
+    raise RuntimeError((last.stderr or last.stdout).strip() if last else "system account command failed")
 
 def validate(name):
     if not USER_RE.fullmatch(name):
@@ -38,9 +46,9 @@ def create_or_update(name, password):
     validate(name)
     with locked():
         if not exists(name):
-            run(["useradd", "-M", "-N", "-G", "panelusers", "-s", "/bin/bash", name])
+            run(["useradd", "-M", "-N", "-G", "panelusers", "-s", "/usr/local/bin/panel-hold", name])
         else:
-            run(["usermod", "-a", "-G", "panelusers", "-s", "/bin/bash", name])
+            run(["usermod", "-a", "-G", "panelusers", "-s", "/usr/local/bin/panel-hold", name])
         run(["chpasswd"], f"{name}:{password}\n")
         run(["usermod", "-U", name], check=False)
 

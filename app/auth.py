@@ -12,7 +12,7 @@ def login_required(view):
         return view(*args, **kwargs)
     return wrapped
 
-def _hash():
+def configured_hash():
     value = current_app.config["ADMIN_PASSWORD"]
     if value.startswith(("scrypt:", "pbkdf2:")):
         return value
@@ -24,7 +24,7 @@ def login():
     if request.method == "POST":
         if (
             request.form.get("username") == current_app.config["ADMIN_USERNAME"]
-            and check_password_hash(_hash(), request.form.get("password", ""))
+            and check_password_hash(configured_hash(), request.form.get("password", ""))
         ):
             session.clear()
             session["admin"] = True
