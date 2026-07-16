@@ -52,3 +52,38 @@ sudo journalctl -u custom-panel-accounting -n 100 --no-pager
 sudo wg show wg0 dump
 sudo swanctl --list-sas
 ```
+
+## Admin credentials
+
+Show the current panel username and password:
+
+```bash
+sudo bash /etc/custom-panel/show-credentials.sh
+```
+
+Equivalent command:
+
+```bash
+sudo cat /etc/custom-panel/admin-credentials.txt
+```
+
+Generate a new random admin password:
+
+```bash
+sudo bash /etc/custom-panel/reset-admin-password.sh
+```
+
+Set a specific password:
+
+```bash
+sudo bash /etc/custom-panel/reset-admin-password.sh 'NEW_STRONG_PASSWORD'
+```
+
+## Protocol selector
+
+The create-user form includes all four supported protocols:
+
+- SSH
+- WireGuard
+- OpenVPN
+- IKEv2

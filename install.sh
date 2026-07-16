@@ -448,3 +448,5 @@ systemctl restart custom-panel
 
 echo "Installed: http://$SERVER_HOST:5000"
 echo "Credentials: $APP_DIR/admin-credentials.txt"
+echo "Show credentials: sudo bash $APP_DIR/show-credentials.sh"
+echo "Reset password: sudo bash $APP_DIR/reset-admin-password.sh"
