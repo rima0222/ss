@@ -19,9 +19,17 @@ async function stats(){
     for(const [id,v] of Object.entries(values)){
       const el=document.getElementById(id); if(el) el.textContent=v;
     }
-    for(const [name,used] of Object.entries(s.user_usage||{})){
+    for(const [name,item] of Object.entries(s.user_usage||{})){
       const el=document.querySelector(`[data-used="${CSS.escape(name)}"]`);
-      if(el) el.textContent=Number(used).toFixed(3);
+      if(el) el.textContent=Number(item.total_gb||0).toFixed(3);
+      const box=document.querySelector(`[data-usage-breakdown="${CSS.escape(name)}"]`);
+      if(box){
+        box.innerHTML=Object.entries(item.protocols||{}).map(([p,v])=>{
+          const val=p==='ssh'?'N/A':`${Number(v.gb||0).toFixed(3)} GB`;
+          const dot=v.online?'●':'○';
+          return `<small>${dot} ${p}: ${val}</small>`;
+        }).join('');
+      }
     }
   }catch(e){}
 }

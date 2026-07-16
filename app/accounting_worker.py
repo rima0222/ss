@@ -1,135 +1,107 @@
-import json
 import logging
-import os
 import time
-from pathlib import Path
 
 from app.config import Config
-from app.db import init_db, connect
-from app.live import wireguard_stats, openvpn_stats
+from app.db import connect, init_db
+from app.live import ikev2_counters, openvpn_counters, ssh_online, wireguard_counters
 
-STATE = Path("/etc/custom-panel/runtime/accounting-state.json")
 INTERVAL = 10
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s",
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("custom-panel-accounting")
 
+def mappings():
+    with connect() as c:
+        rows = c.execute("""
+        SELECT p.user_id,p.protocol,p.identifier,u.username,u.paused
+        FROM user_protocols p JOIN users u ON u.id=p.user_id
+        WHERE p.enabled=1
+        """).fetchall()
+    return [dict(r) for r in rows]
 
-def load_state():
-    try:
-        raw = json.loads(STATE.read_text())
-        return raw if isinstance(raw, dict) else {}
-    except FileNotFoundError:
-        return {}
-    except Exception:
-        log.exception("Could not load accounting state; starting with an empty state")
-        return {}
-
-
-def save_state(state):
-    STATE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = STATE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(state, separators=(",", ":")))
-    os.replace(tmp, STATE)
-
-
-def counters():
-    data = {}
-
-    for name, stat in wireguard_stats(Config.WG_INTERFACE).items():
-        data.setdefault(name, {})["wireguard"] = (
-            int(stat.get("rx_bytes", 0)) + int(stat.get("tx_bytes", 0))
-        )
-
-    for name, stat in openvpn_stats().items():
-        data.setdefault(name, {})["openvpn"] = (
-            int(stat.get("rx_bytes", 0)) + int(stat.get("tx_bytes", 0))
-        )
-
-    return data
-
-
-def active_usernames():
-    with connect() as conn:
-        return {
-            row["username"]
-            for row in conn.execute("SELECT username FROM users").fetchall()
-        }
-
-
-def tick(state):
-    current = counters()
-    users = active_usernames()
-    deltas = {}
-
-    # Remove state belonging to deleted users.
-    state = {
-        key: value
-        for key, value in state.items()
-        if key.split(":", 1)[0] in users
+def source_counters():
+    return {
+        "wireguard": wireguard_counters(Config.WG_INTERFACE),
+        "openvpn": openvpn_counters(),
+        "ikev2": ikev2_counters(),
     }
 
-    for username, protocols in current.items():
-        if username not in users:
-            continue
+def tick():
+    now = int(time.time())
+    sources = source_counters()
+    ssh = ssh_online()
 
-        for protocol, value in protocols.items():
-            key = f"{username}:{protocol}"
-            value = max(0, int(value))
+    with connect() as c:
+        for item in mappings():
+            uid = item["user_id"]
+            protocol = item["protocol"]
+            identifier = item["identifier"] or item["username"]
 
-            # A newly observed peer/session starts at zero so already transferred
-            # bytes are not silently discarded before the first worker sample.
-            previous = max(0, int(state.get(key, 0)))
+            if protocol == "ssh":
+                c.execute("""
+                INSERT INTO protocol_usage(user_id,protocol,online,last_seen,updated_at)
+                VALUES(?,?,?, ?,CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id,protocol) DO UPDATE SET
+                  online=excluded.online,last_seen=excluded.last_seen,updated_at=CURRENT_TIMESTAMP
+                """, (uid, protocol, int(item["username"] in ssh), now if item["username"] in ssh else 0))
+                continue
 
-            if value >= previous:
-                delta = value - previous
-            else:
-                # Counter reset after a protocol/service restart.
-                delta = value
+            counter = sources.get(protocol, {}).get(identifier)
+            if counter is None:
+                c.execute("""
+                INSERT INTO protocol_usage(user_id,protocol,online,updated_at)
+                VALUES(?,?,0,CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id,protocol) DO UPDATE SET online=0,updated_at=CURRENT_TIMESTAMP
+                """, (uid, protocol))
+                continue
 
-            if delta > 0:
-                deltas[username] = deltas.get(username, 0) + delta
+            old = c.execute("""
+            SELECT last_rx_counter,last_tx_counter FROM protocol_usage
+            WHERE user_id=? AND protocol=?
+            """, (uid, protocol)).fetchone()
+            old_rx = int(old["last_rx_counter"]) if old else 0
+            old_tx = int(old["last_tx_counter"]) if old else 0
+            new_rx = max(0, int(counter.get("rx", 0)))
+            new_tx = max(0, int(counter.get("tx", 0)))
+            delta_rx = new_rx - old_rx if new_rx >= old_rx else new_rx
+            delta_tx = new_tx - old_tx if new_tx >= old_tx else new_tx
 
-            state[key] = value
+            c.execute("""
+            INSERT INTO protocol_usage(
+              user_id,protocol,rx_bytes,tx_bytes,last_rx_counter,last_tx_counter,
+              online,last_seen,updated_at
+            ) VALUES(?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+            ON CONFLICT(user_id,protocol) DO UPDATE SET
+              rx_bytes=protocol_usage.rx_bytes+excluded.rx_bytes,
+              tx_bytes=protocol_usage.tx_bytes+excluded.tx_bytes,
+              last_rx_counter=excluded.last_rx_counter,
+              last_tx_counter=excluded.last_tx_counter,
+              online=excluded.online,
+              last_seen=excluded.last_seen,
+              updated_at=CURRENT_TIMESTAMP
+            """, (
+                uid, protocol, max(0, delta_rx), max(0, delta_tx), new_rx, new_tx,
+                1, int(counter.get("seen") or now),
+            ))
 
-    if deltas:
-        rows = [
-            (byte_count / (1024 ** 3), username)
-            for username, byte_count in deltas.items()
-            if byte_count > 0
-        ]
-        with connect() as conn:
-            conn.executemany(
-                """
-                UPDATE users
-                SET used_gb = used_gb + ?,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE username = ? AND paused = 0
-                """,
-                rows,
-            )
-            conn.commit()
-        log.info("Updated traffic for %d user(s)", len(rows))
-
-    save_state(state)
-    return state
-
+        c.execute("""
+        UPDATE users
+        SET used_gb = COALESCE((
+          SELECT SUM(rx_bytes + tx_bytes) / 1073741824.0
+          FROM protocol_usage pu WHERE pu.user_id=users.id
+        ), 0),
+        updated_at=CURRENT_TIMESTAMP
+        """)
+        c.commit()
 
 def main():
     init_db(Config.DB_PATH)
-    state = load_state()
-    log.info("Accounting worker started; interval=%ss", INTERVAL)
-
+    log.info("Accounting worker started")
     while True:
         try:
-            state = tick(state)
+            tick()
         except Exception:
             log.exception("Accounting tick failed")
         time.sleep(INTERVAL)
-
 
 if __name__ == "__main__":
     main()

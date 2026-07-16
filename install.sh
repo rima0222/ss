@@ -150,11 +150,8 @@ SERVER_HOST="${PANEL_SERVER_HOST:-$(curl -4fsS --max-time 10 https://api.ipify.o
 [[ $EUID -eq 0 ]] || { echo 'Run with sudo.'; exit 1; }
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
-# Remove IKEv2 packages left by older panel releases.
-apt-get purge -y strongswan-swanctl strongswan-pki charon-systemd libcharon-extra-plugins 2>/dev/null || true
-apt-get autoremove -y 2>/dev/null || true
 apt-get install -y python3 python3-venv git curl ca-certificates openssh-server sqlite3 \
-  wireguard-tools openvpn easy-rsa qrencode ufw
+  wireguard-tools openvpn easy-rsa qrencode ufw strongswan-swanctl strongswan-pki charon-systemd libcharon-extra-plugins
 
 systemctl enable --now ssh
 
@@ -185,6 +182,7 @@ CUSTOM_PANEL_WG_INTERFACE=wg0
 CUSTOM_PANEL_WG_PORT=51820
 CUSTOM_PANEL_WG_SUBNET=10.66.0.0/24
 CUSTOM_PANEL_OVPN_PORT=1194
+CUSTOM_PANEL_IKE_REMOTE_ID=$SERVER_HOST
 EOF
   printf 'Username: admin\nPassword: %s\n' "$ADMIN_PASSWORD" > "$APP_DIR/admin-credentials.txt"
   chmod 600 "$APP_DIR/.env" "$APP_DIR/admin-credentials.txt"
@@ -290,6 +288,79 @@ if ! systemctl is-active --quiet openvpn-server@server; then
   exit 1
 fi
 
+
+# IKEv2 / strongSwan bootstrap
+SWAN=/etc/swanctl
+mkdir -p "$SWAN/conf.d" "$SWAN/x509" "$SWAN/x509ca" "$SWAN/private"
+if [[ ! -f "$SWAN/private/custom-panel-ca.key" ]]; then
+  pki --gen --type rsa --size 3072 --outform pem > "$SWAN/private/custom-panel-ca.key"
+  pki --self --ca --lifetime 3650 \
+    --in "$SWAN/private/custom-panel-ca.key" --type rsa \
+    --dn "CN=Custom Panel CA" --outform pem > "$SWAN/x509ca/custom-panel-ca.crt"
+
+  pki --gen --type rsa --size 3072 --outform pem > "$SWAN/private/server.key"
+  pki --pub --in "$SWAN/private/server.key" --type rsa |
+    pki --issue --lifetime 1825 \
+      --cacert "$SWAN/x509ca/custom-panel-ca.crt" \
+      --cakey "$SWAN/private/custom-panel-ca.key" \
+      --dn "CN=$SERVER_HOST" --san "$SERVER_HOST" \
+      --flag serverAuth --flag ikeIntermediate \
+      --outform pem > "$SWAN/x509/server.crt"
+  chmod 600 "$SWAN/private/"*.key
+fi
+
+cat > "$SWAN/conf.d/custom-panel.conf" <<EOF
+connections {
+  custom-panel-eap {
+    version = 2
+    local_addrs = %any
+    pools = vpn4
+    proposals = aes256-sha256-modp2048,aes128-sha256-modp2048
+    fragmentation = yes
+    mobike = yes
+    local {
+      auth = pubkey
+      certs = server.crt
+      id = $SERVER_HOST
+    }
+    remote {
+      auth = eap-mschapv2
+      eap_id = %any
+    }
+    children {
+      net {
+        local_ts = 0.0.0.0/0
+        esp_proposals = aes256-sha256,aes128-sha256
+        dpd_action = clear
+      }
+    }
+  }
+}
+pools {
+  vpn4 {
+    addrs = 10.68.0.0/24
+    dns = 1.1.1.1
+  }
+}
+EOF
+
+[[ -f "$SWAN/conf.d/custom-panel-users.conf" ]] || printf 'secrets {\n}\n' > "$SWAN/conf.d/custom-panel-users.conf"
+
+WAN_IF=$(ip route show default | awk '/default/ {print $5; exit}')
+iptables -t nat -C POSTROUTING -s 10.68.0.0/24 -o "$WAN_IF" -j MASQUERADE 2>/dev/null || \
+  iptables -t nat -A POSTROUTING -s 10.68.0.0/24 -o "$WAN_IF" -j MASQUERADE
+iptables -C FORWARD -s 10.68.0.0/24 -j ACCEPT 2>/dev/null || iptables -A FORWARD -s 10.68.0.0/24 -j ACCEPT
+iptables -C FORWARD -d 10.68.0.0/24 -j ACCEPT 2>/dev/null || iptables -A FORWARD -d 10.68.0.0/24 -j ACCEPT
+
+systemctl enable strongswan.service 2>/dev/null || true
+systemctl restart strongswan.service
+if ! systemctl is-active --quiet strongswan.service; then
+  echo "[!] IKEv2 failed to start."
+  journalctl -u strongswan.service -n 100 --no-pager || true
+  exit 1
+fi
+swanctl --load-all
+
 cat > /etc/systemd/system/custom-panel-wg-restore.service <<EOF
 [Unit]
 Description=Restore Custom Panel WireGuard peers
@@ -363,7 +434,9 @@ ufw route allow in on tun0 out on "$WAN_IF" >/dev/null 2>&1 || true
 ufw allow OpenSSH >/dev/null || true
 ufw allow 5000/tcp >/dev/null || true
 ufw allow 51820/udp >/dev/null || true
-ufw allow 1194/udp >/dev/null || true
+ufw allow 1194/udp
+ufw allow 500/udp
+ufw allow 4500/udp >/dev/null || true
 ufw --force enable >/dev/null || true
 systemctl daemon-reload
 systemctl enable --now custom-panel-wg-restore.service

@@ -1,67 +1,51 @@
 import os
-from flask import Blueprint, jsonify, current_app
+from flask import Blueprint, jsonify
+
 from .auth import login_required
 from .db import connect
-from .live import collect_live
+from .users import list_users
 
-api_bp = Blueprint('api', __name__, url_prefix='/api')
+api_bp = Blueprint("api", __name__, url_prefix="/api")
 
+def memory_percent():
+    values = {}
+    for line in open("/proc/meminfo"):
+        key, value = line.split(":", 1)
+        values[key] = int(value.split()[0])
+    return round((1 - values["MemAvailable"] / values["MemTotal"]) * 100, 1)
 
-def mem():
-    d = {}
-    with open('/proc/meminfo') as f:
-        for line in f:
-            key, value = line.split(':', 1)
-            d[key] = int(value.strip().split()[0])
-    return round((d['MemTotal'] - d.get('MemAvailable', d['MemFree'])) / d['MemTotal'] * 100, 1)
-
-
-def cpu():
-    load = os.getloadavg()
-    return {'one': round(load[0], 2), 'five': round(load[1], 2), 'fifteen': round(load[2], 2)}
-
-
-def user_rows():
-    with connect() as c:
-        rows = c.execute("""
-            SELECT u.*, GROUP_CONCAT(CASE WHEN p.enabled=1 THEN p.protocol END) AS protocols
-            FROM users u
-            LEFT JOIN user_protocols p ON p.user_id=u.id
-            GROUP BY u.id
-            ORDER BY u.id DESC
-        """).fetchall()
-    return [dict(row) for row in rows]
-
-
-@api_bp.get('/stats')
+@api_bp.get("/stats")
 @login_required
 def stats():
-    users = user_rows()
-    live = collect_live(users, current_app.config['WG_INTERFACE'])
+    users = list_users()
     with connect() as c:
         summary = c.execute("""
-            SELECT COUNT(*) users,
-                   SUM(CASE WHEN paused=0 THEN 1 ELSE 0 END) active,
-                   COALESCE(SUM(limit_gb),0) quota,
-                   COALESCE(SUM(used_gb),0) used
-            FROM users
+        SELECT COUNT(*) total_users,
+               SUM(CASE WHEN paused=0 AND status='Active' THEN 1 ELSE 0 END) active_users,
+               COALESCE(SUM(limit_gb),0) total_limit_gb,
+               COALESCE(SUM(used_gb),0) total_used_gb
+        FROM users
         """).fetchone()
-    online = sum(1 for item in live.values() if item['online'])
+        online = c.execute("""
+        SELECT COUNT(DISTINCT user_id) n FROM protocol_usage WHERE online=1
+        """).fetchone()["n"]
+
     return jsonify({
         **dict(summary),
-        'online': online,
-        'memory_percent': mem(),
-        'load': cpu(),
-        'uptime_seconds': int(float(open('/proc/uptime').read().split()[0])),
-        'user_usage': {
-            item['username']: round(float(item.get('used_gb') or 0), 6)
-            for item in users
+        "online": online,
+        "memory_percent": memory_percent(),
+        "load": round(os.getloadavg()[0], 2),
+        "user_usage": {
+            u["username"]: {
+                "total_gb": round(float(u.get("used_gb") or 0), 6),
+                "protocols": {
+                    p: {
+                        "gb": round((int(s.get("rx_bytes") or 0) + int(s.get("tx_bytes") or 0)) / (1024**3), 6),
+                        "online": bool(s.get("online")),
+                    }
+                    for p, s in u.get("protocol_usage", {}).items()
+                },
+            }
+            for u in users
         },
     })
-
-
-@api_bp.get('/live')
-@login_required
-def live():
-    users = user_rows()
-    return jsonify({'users': collect_live(users, current_app.config['WG_INTERFACE'])})

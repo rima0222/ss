@@ -8,3 +8,5 @@
 .traffic-live{display:flex;flex-direction:column;gap:3px;font-variant-numeric:tabular-nums;font-size:11px;color:#94a3b8;white-space:nowrap}
 .traffic-live span:first-child{color:#60a5fa}.traffic-live span:last-child{color:#a78bfa}
 @keyframes livePulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.55;transform:scale(.8)}}
+
+.usage-breakdown{display:flex;flex-direction:column;gap:2px;margin-top:6px;color:#94a3b8}.usage-breakdown small{font-size:11px}

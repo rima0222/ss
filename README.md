@@ -1,21 +1,20 @@
-# Custom Panel v1.5
+# Custom Panel v2.0 RC
 
-Production-oriented Ubuntu panel for SSH, WireGuard and OpenVPN. IKEv2 has been removed because older releases generated an invalid strongSwan configuration.
+Supported protocols:
 
-## Features
+- SSH
+- WireGuard
+- OpenVPN
+- IKEv2 / strongSwan
 
-- SSH, WireGuard and OpenVPN can be assigned to the same user
-- User create/edit/pause/resume/delete
-- Remaining days and quota display
-- Online status
-- WireGuard QR/config and OpenVPN `.ovpn` export
-- Versioned backup/restore compatible with legacy backups
-- Clean reinstall with emergency rescue archive
-- Linux-account file lock for safe concurrent operations
-- WireGuard/OpenVPN usage accounting every 15 seconds
-- OpenVPN NAT, disabled-user enforcement and management disconnect
+## Important accounting behavior
 
-Old `ikev2` entries in backups or databases are ignored and removed safely.
+WireGuard, OpenVPN, and IKEv2 use their protocol-native counters and store
+independent cumulative totals in `protocol_usage`.
+
+SSH sessions are shown as online/offline, but no fabricated traffic number is
+stored. Exact per-user SSH tunnel accounting requires an eBPF/cgroup-based
+collector or per-user network namespaces, which is outside this release.
 
 ## Install
 
@@ -23,32 +22,33 @@ Old `ikev2` entries in backups or databases are ignored and removed safely.
 curl -fsSL https://raw.githubusercontent.com/rima0222/ss/main/install.sh | sudo bash
 ```
 
-Credentials:
+The installer performs a clean reinstall by default and stores an emergency
+backup under `/root/custom-panel-rescue-*`.
+
+## IKEv2 client details
+
+The downloaded IKEv2 text file shows:
+
+- Server
+- Remote ID
+- Username
+- Password
+- CA certificate download path
+
+For IP-based servers, the generated certificate includes the public IP as a SAN.
+A domain name with a publicly trusted certificate is still preferable for broad
+client compatibility.
+
+## Diagnostics
 
 ```bash
-sudo cat /etc/custom-panel/admin-credentials.txt
-```
-
-The clean installer saves an emergency archive under `/root/custom-panel-rescue-*.tar.gz`.
-
-## v1.6 OpenVPN and accounting fixes
-
-- Removes the mandatory CRL file that prevented OpenVPN from starting.
-- Protects the localhost OpenVPN management interface with a generated password.
-- Stops installation if OpenVPN fails its health check.
-- Logs accounting errors instead of silently discarding them.
-- Counts a new WireGuard/OpenVPN counter from zero on first observation.
-- Handles counter resets after protocol restarts.
-- Refreshes each user's stored usage in the dashboard every 15 seconds.
-
-Diagnostics:
-
-```bash
-sudo systemctl status openvpn-server@server --no-pager
+sudo systemctl status custom-panel --no-pager
 sudo systemctl status custom-panel-accounting --no-pager
-sudo journalctl -u custom-panel-accounting -n 100 --no-pager
-sudo wg show wg0 transfer
-```
+sudo systemctl status wg-quick@wg0 --no-pager
+sudo systemctl status openvpn-server@server --no-pager
+sudo systemctl status strongswan --no-pager
 
-Traffic accounting in this release covers WireGuard and OpenVPN. Linux SSH
-sessions are not assigned fabricated traffic values.
+sudo journalctl -u custom-panel-accounting -n 100 --no-pager
+sudo wg show wg0 dump
+sudo swanctl --list-sas
+```

@@ -1,175 +1,332 @@
-import base64,fcntl,ipaddress,json,os,pwd,re,socket,subprocess,tempfile
+import fcntl
+import ipaddress
+import json
+import os
+import re
+import socket
+import subprocess
 from pathlib import Path
+
 from flask import current_app
-USER_RE=re.compile(r'^[a-z_][a-z0-9_-]{0,30}$')
 
-ACCOUNT_LOCK=Path('/run/lock/custom-panel-accounts.lock')
+USER_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,30}$")
+ACCOUNT_LOCK = Path("/run/lock/custom-panel-accounts.lock")
+PROTOCOL_LOCK = Path("/run/lock/custom-panel-protocols.lock")
 
-class account_lock:
+class file_lock:
+    def __init__(self, path):
+        self.path = path
     def __enter__(self):
-        ACCOUNT_LOCK.parent.mkdir(parents=True,exist_ok=True)
-        self._file=ACCOUNT_LOCK.open('a+')
-        fcntl.flock(self._file.fileno(),fcntl.LOCK_EX)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.f = self.path.open("a+")
+        fcntl.flock(self.f.fileno(), fcntl.LOCK_EX)
         return self
-    def __exit__(self,exc_type,exc,tb):
-        fcntl.flock(self._file.fileno(),fcntl.LOCK_UN)
-        self._file.close()
+    def __exit__(self, *_):
+        fcntl.flock(self.f.fileno(), fcntl.LOCK_UN)
+        self.f.close()
 
+def run(args, input_text=None, check=True, timeout=30):
+    result = subprocess.run(
+        args,
+        input=input_text,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=timeout,
+        check=False,
+    )
+    if check and result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or f"command failed: {args[0]}")
+    return result
 
-def run(args,input_text=None,check=True):
-    return subprocess.run(args,input=input_text,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=20,check=check)
-
-def valid_user(u):
-    if not USER_RE.fullmatch(u): raise ValueError('نام کاربری لینوکس نامعتبر است.')
+def valid_user(name):
+    if not USER_RE.fullmatch(name):
+        raise ValueError("نام کاربری نامعتبر است.")
 
 class SSH:
-    name='ssh'
-    def create(self,u):
-        valid_user(u['username'])
-        username=u['username']
-        with account_lock():
-            exists=subprocess.run(['getent','passwd',username],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode==0
-            if exists:
-                result=run(['usermod','-s','/usr/sbin/nologin',username],check=False)
-                if result.returncode!=0:
-                    raise RuntimeError(result.stderr.strip() or 'Failed to update existing Linux account')
+    name = "ssh"
+    def create(self, user):
+        valid_user(user["username"])
+        name = user["username"]
+        with file_lock(ACCOUNT_LOCK):
+            exists = run(["getent", "passwd", name], check=False).returncode == 0
+            if not exists:
+                run(["useradd", "-M", "-N", "-s", "/usr/sbin/nologin", name])
             else:
-                result=run(['useradd','-M','-N','-s','/usr/sbin/nologin',username],check=False)
-                if result.returncode!=0:
-                    if subprocess.run(['getent','passwd',username],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode!=0:
-                        raise RuntimeError(result.stderr.strip() or f'useradd failed with status {result.returncode}')
-            result=run(['chpasswd'], f"{username}:{u['password']}\n",check=False)
-            if result.returncode!=0:
-                raise RuntimeError(result.stderr.strip() or 'Failed to set Linux account password')
-            result=run(['usermod','-U',username],check=False)
-            if result.returncode!=0:
-                raise RuntimeError(result.stderr.strip() or 'Failed to unlock Linux account')
-    update=create
-    def pause(self,u):
-        with account_lock(): run(['usermod','-L',u['username']])
-        run(['pkill','-KILL','-u',u['username']],check=False)
-    def resume(self,u):
-        with account_lock(): run(['usermod','-U',u['username']])
-    def delete(self,u):
-        run(['pkill','-KILL','-u',u['username']],check=False)
-        with account_lock(): run(['userdel','-r',u['username']],check=False)
-    def client(self,u):
-        content = f"Host: {current_app.config['SERVER_HOST']}\nPort: 22\nUsername: {u['username']}\nPassword: {u['password']}\n"
-        return {'type':'text','filename':f"{u['username']}-ssh.txt",'content':content}
+                run(["usermod", "-s", "/usr/sbin/nologin", name])
+            run(["chpasswd"], f"{name}:{user['password']}\n")
+            run(["usermod", "-U", name])
+        return {"identifier": name, "config": {}}
+    update = create
+    def pause(self, user, meta=None):
+        with file_lock(ACCOUNT_LOCK):
+            run(["usermod", "-L", user["username"]], check=False)
+        run(["pkill", "-KILL", "-u", user["username"]], check=False)
+    def resume(self, user, meta=None):
+        with file_lock(ACCOUNT_LOCK):
+            run(["usermod", "-U", user["username"]], check=False)
+    def delete(self, user, meta=None):
+        run(["pkill", "-KILL", "-u", user["username"]], check=False)
+        with file_lock(ACCOUNT_LOCK):
+            run(["userdel", "-r", user["username"]], check=False)
+    def client(self, user, meta=None):
+        content = (
+            f"Host: {current_app.config['SERVER_HOST']}\n"
+            f"Port: 22\nUsername: {user['username']}\nPassword: {user['password']}\n"
+        )
+        return {"filename": f"{user['username']}-ssh.txt", "content": content}
+
 class WireGuard:
-    name='wireguard'
-    conf=Path('/etc/wireguard/custom-panel-peers.json')
+    name = "wireguard"
+    state = Path("/etc/wireguard/custom-panel-peers.json")
+
     def _all(self):
-        try: return json.loads(self.conf.read_text())
-        except Exception: return {}
-    def _save(self,d): self.conf.parent.mkdir(parents=True,exist_ok=True); self.conf.write_text(json.dumps(d,indent=2)); os.chmod(self.conf,0o600)
-    def create(self,u):
-        d=self._all(); name=u['username']
-        if name in d: return
-        priv=run(['wg','genkey']).stdout.strip(); pub=run(['wg','pubkey'],priv+'\n').stdout.strip()
-        used={x['address'] for x in d.values()}; address=None
-        for ip in ipaddress.ip_network('10.66.0.0/24').hosts():
-            if str(ip)=='10.66.0.1': continue
-            if str(ip) not in used: address=str(ip); break
-        if not address: raise RuntimeError('WireGuard pool is full')
-        d[name]={'private_key':priv,'public_key':pub,'address':address}; self._save(d)
-        run(['wg','set',current_app.config['WG_INTERFACE'],'peer',pub,'allowed-ips',address+'/32'])
-    def pause(self,u):
-        x=self._all().get(u['username']);
-        if x: run(['wg','set',current_app.config['WG_INTERFACE'],'peer',x['public_key'],'remove'],check=False)
-    def resume(self,u):
-        x=self._all().get(u['username']);
-        if x: run(['wg','set',current_app.config['WG_INTERFACE'],'peer',x['public_key'],'allowed-ips',x['address']+'/32'])
-    def delete(self,u):
-        d=self._all(); x=d.pop(u['username'],None)
-        if x: run(['wg','set',current_app.config['WG_INTERFACE'],'peer',x['public_key'],'remove'],check=False); self._save(d)
-    def update(self,u): return None
-    def client(self,u):
-        x=self._all().get(u['username']);
-        if not x: raise RuntimeError('WireGuard profile not found')
-        server_pub=Path('/etc/wireguard/server.pub').read_text().strip()
-        c=f"""[Interface]
-PrivateKey = {x['private_key']}
-Address = {x['address']}/32
+        try:
+            return json.loads(self.state.read_text())
+        except Exception:
+            return {}
+
+    def _save(self, data):
+        self.state.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.state.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=2))
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, self.state)
+
+    def create(self, user):
+        with file_lock(PROTOCOL_LOCK):
+            data = self._all()
+            name = user["username"]
+            if name in data:
+                item = data[name]
+            else:
+                private = run(["wg", "genkey"]).stdout.strip()
+                public = run(["wg", "pubkey"], private + "\n").stdout.strip()
+                used = {x["address"] for x in data.values()}
+                address = next(
+                    (str(ip) for ip in ipaddress.ip_network("10.66.0.0/24").hosts()
+                     if str(ip) != "10.66.0.1" and str(ip) not in used),
+                    None,
+                )
+                if not address:
+                    raise RuntimeError("ظرفیت WireGuard تکمیل است.")
+                item = {"private_key": private, "public_key": public, "address": address}
+                data[name] = item
+                self._save(data)
+
+            run([
+                "wg", "set", current_app.config["WG_INTERFACE"],
+                "peer", item["public_key"],
+                "allowed-ips", item["address"] + "/32",
+            ])
+            return {"identifier": item["public_key"], "config": item}
+
+    def pause(self, user, meta=None):
+        item = (meta or {}).get("config") or self._all().get(user["username"])
+        if item:
+            run(["wg", "set", current_app.config["WG_INTERFACE"], "peer", item["public_key"], "remove"], check=False)
+
+    def resume(self, user, meta=None):
+        item = (meta or {}).get("config") or self._all().get(user["username"])
+        if item:
+            run([
+                "wg", "set", current_app.config["WG_INTERFACE"],
+                "peer", item["public_key"],
+                "allowed-ips", item["address"] + "/32",
+            ], check=False)
+
+    def delete(self, user, meta=None):
+        with file_lock(PROTOCOL_LOCK):
+            data = self._all()
+            item = data.pop(user["username"], None)
+            if item:
+                run(["wg", "set", current_app.config["WG_INTERFACE"], "peer", item["public_key"], "remove"], check=False)
+                self._save(data)
+
+    def update(self, user, meta=None):
+        return None
+
+    def client(self, user, meta=None):
+        item = (meta or {}).get("config") or self._all().get(user["username"])
+        if not item:
+            raise RuntimeError("پروفایل WireGuard پیدا نشد.")
+        server_public = Path("/etc/wireguard/server.pub").read_text().strip()
+        content = f"""[Interface]
+PrivateKey = {item['private_key']}
+Address = {item['address']}/32
 DNS = 1.1.1.1
 
 [Peer]
-PublicKey = {server_pub}
+PublicKey = {server_public}
 Endpoint = {current_app.config['SERVER_HOST']}:{current_app.config['WG_PORT']}
 AllowedIPs = 0.0.0.0/0
 PersistentKeepalive = 25
 """
-        return {'type':'wireguard','filename':f"{u['username']}.conf",'content':c}
+        return {"filename": f"{user['username']}.conf", "content": content}
 
 class OpenVPN:
-    name='openvpn'; base=Path('/etc/openvpn/server')
-    def _disconnect(self,name):
+    name = "openvpn"
+    base = Path("/etc/openvpn/server")
+
+    def _disconnect(self, name):
         try:
-            password=(self.base/'management.pass').read_text().strip()
-            with socket.create_connection(('127.0.0.1',7505),timeout=3) as sock:
+            password = (self.base / "management.pass").read_text().strip()
+            with socket.create_connection(("127.0.0.1", 7505), timeout=3) as sock:
                 sock.settimeout(3)
-                greeting=sock.recv(4096)
-                if b'PASSWORD:' in greeting or password:
-                    sock.sendall((password+'\n').encode())
-                    try:
-                        sock.recv(4096)
-                    except Exception:
-                        pass
-                sock.sendall(f'kill {name}\nquit\n'.encode())
+                greeting = sock.recv(4096)
+                if b"PASSWORD:" in greeting:
+                    sock.sendall((password + "\n").encode())
+                    sock.recv(4096)
+                sock.sendall(f"kill {name}\nquit\n".encode())
         except Exception:
             pass
-    def create(self,u):
-        name=u['username']; valid_user(name); er=self.base/'easy-rsa'
-        if not (er/'pki'/'issued'/f'{name}.crt').exists():
-            run([str(er/'easyrsa'),'--batch','build-client-full',name,'nopass'])
-        (self.base/'clients'/f'{name}.disabled').unlink(missing_ok=True)
-    def pause(self,u):
-        p=self.base/'clients'/f"{u['username']}.disabled"
-        p.parent.mkdir(parents=True,exist_ok=True)
-        p.write_text('disabled\n')
-        self._disconnect(u['username'])
-    def resume(self,u):
-        (self.base/'clients'/f"{u['username']}.disabled").unlink(missing_ok=True)
-    def delete(self,u):
-        name=u['username']
-        disabled=self.base/'clients'/f"{name}.disabled"
-        disabled.parent.mkdir(parents=True,exist_ok=True)
-        disabled.write_text('deleted\n')
-        self._disconnect(name)
-        er=self.base/'easy-rsa'
-        run([str(er/'easyrsa'),'--batch','revoke',name],check=False)
-    def update(self,u): return None
-    def client(self,u):
-        n=u['username']; er=self.base/'easy-rsa'; host=current_app.config['SERVER_HOST']; port=current_app.config['OVPN_PORT']
-        def read(path): return Path(path).read_text().strip()
-        c=f"""client
- dev tun
- proto udp
- remote {host} {port}
- resolv-retry infinite
- nobind
- persist-key
- persist-tun
- remote-cert-tls server
- auth SHA256
- cipher AES-256-GCM
- data-ciphers AES-256-GCM:CHACHA20-POLY1305
- auth-nocache
- verb 3
- <ca>
- {read(self.base/'ca.crt')}
- </ca>
- <cert>
- {read(er/'pki'/'issued'/f'{n}.crt')}
- </cert>
- <key>
- {read(er/'pki'/'private'/f'{n}.key')}
- </key>
- <tls-crypt>
- {read(self.base/'tls-crypt.key')}
- </tls-crypt>
- """
-        c='\n'.join(line[1:] if line.startswith(' ') else line for line in c.splitlines())+'\n'
-        return {'type':'text','filename':f'{n}.ovpn','content':c}
 
-REGISTRY={'ssh':SSH(),'wireguard':WireGuard(),'openvpn':OpenVPN()}
+    def create(self, user):
+        name = user["username"]
+        valid_user(name)
+        er = self.base / "easy-rsa"
+        with file_lock(PROTOCOL_LOCK):
+            if not (er / "pki" / "issued" / f"{name}.crt").exists():
+                run([str(er / "easyrsa"), "--batch", "build-client-full", name, "nopass"], timeout=120)
+            (self.base / "clients" / f"{name}.disabled").unlink(missing_ok=True)
+        return {"identifier": name, "config": {"common_name": name}}
+
+    def pause(self, user, meta=None):
+        marker = self.base / "clients" / f"{user['username']}.disabled"
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("disabled\n")
+        self._disconnect(user["username"])
+
+    def resume(self, user, meta=None):
+        (self.base / "clients" / f"{user['username']}.disabled").unlink(missing_ok=True)
+
+    def delete(self, user, meta=None):
+        marker = self.base / "clients" / f"{user['username']}.disabled"
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("deleted\n")
+        self._disconnect(user["username"])
+
+    def update(self, user, meta=None):
+        return None
+
+    def client(self, user, meta=None):
+        name = user["username"]
+        er = self.base / "easy-rsa"
+        def read(path):
+            return Path(path).read_text().strip()
+        content = f"""client
+dev tun
+proto udp
+remote {current_app.config['SERVER_HOST']} {current_app.config['OVPN_PORT']}
+resolv-retry infinite
+nobind
+persist-key
+persist-tun
+remote-cert-tls server
+auth SHA256
+data-ciphers AES-256-GCM:CHACHA20-POLY1305
+auth-nocache
+verb 3
+<ca>
+{read(self.base/'ca.crt')}
+</ca>
+<cert>
+{read(er/'pki'/'issued'/f'{name}.crt')}
+</cert>
+<key>
+{read(er/'pki'/'private'/f'{name}.key')}
+</key>
+<tls-crypt>
+{read(self.base/'tls-crypt.key')}
+</tls-crypt>
+"""
+        return {"filename": f"{name}.ovpn", "content": content}
+
+class IKEv2:
+    name = "ikev2"
+    users_file = Path("/etc/swanctl/conf.d/custom-panel-users.conf")
+    state_file = Path("/etc/swanctl/custom-panel-users.json")
+
+    def _all(self):
+        try:
+            return json.loads(self.state_file.read_text())
+        except Exception:
+            return {}
+
+    def _write(self, data):
+        self.state_file.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.state_file.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=2))
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, self.state_file)
+
+        lines = ["secrets {"]
+        for name, item in sorted(data.items()):
+            if item.get("disabled"):
+                continue
+            lines += [
+                f"  eap-{name} {{",
+                f"    id = {name}",
+                f"    secret = \"{item['password'].replace(chr(34), '')}\"",
+                "  }",
+            ]
+        lines.append("}")
+        tmp_conf = self.users_file.with_suffix(".tmp")
+        tmp_conf.write_text("\n".join(lines) + "\n")
+        os.chmod(tmp_conf, 0o600)
+        os.replace(tmp_conf, self.users_file)
+        run(["swanctl", "--load-creds"], check=False)
+
+    def create(self, user):
+        valid_user(user["username"])
+        with file_lock(PROTOCOL_LOCK):
+            data = self._all()
+            data[user["username"]] = {"password": user["password"], "disabled": False}
+            self._write(data)
+        return {"identifier": user["username"], "config": {"eap_id": user["username"]}}
+
+    update = create
+
+    def pause(self, user, meta=None):
+        with file_lock(PROTOCOL_LOCK):
+            data = self._all()
+            if user["username"] in data:
+                data[user["username"]]["disabled"] = True
+                self._write(data)
+        # Reloading credentials prevents new logins. Existing SAs are terminated
+        # by connection name; this may disconnect other IKEv2 users too.
+        run(["swanctl", "--terminate", "--ike", "custom-panel-eap"], check=False)
+
+    def resume(self, user, meta=None):
+        with file_lock(PROTOCOL_LOCK):
+            data = self._all()
+            if user["username"] in data:
+                data[user["username"]]["disabled"] = False
+                data[user["username"]]["password"] = user["password"]
+                self._write(data)
+
+    def delete(self, user, meta=None):
+        with file_lock(PROTOCOL_LOCK):
+            data = self._all()
+            data.pop(user["username"], None)
+            self._write(data)
+        run(["swanctl", "--terminate", "--ike", "custom-panel-eap"], check=False)
+
+    def client(self, user, meta=None):
+        ca = Path("/etc/swanctl/x509ca/custom-panel-ca.crt")
+        content = (
+            f"Server: {current_app.config['SERVER_HOST']}\n"
+            f"VPN type: IKEv2\n"
+            f"Remote ID: {current_app.config['IKE_REMOTE_ID']}\n"
+            f"Username: {user['username']}\n"
+            f"Password: {user['password']}\n"
+            f"CA certificate: /users/{user['username']}/config/ikev2-ca\n"
+        )
+        return {"filename": f"{user['username']}-ikev2.txt", "content": content}
+
+REGISTRY = {
+    "ssh": SSH(),
+    "wireguard": WireGuard(),
+    "openvpn": OpenVPN(),
+    "ikev2": IKEv2(),
+}
