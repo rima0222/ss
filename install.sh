@@ -321,7 +321,8 @@ Restart=on-failure
 RestartSec=3
 PrivateTmp=true
 ProtectHome=true
-ProtectSystem=full
+ProtectSystem=no
+# This service intentionally manages Linux users in /etc/passwd and /etc/shadow.
 ReadWritePaths=$APP_DIR/data $APP_DIR/backups $APP_DIR/runtime /etc/wireguard /etc/openvpn /etc/swanctl /run
 LimitNOFILE=65535
 

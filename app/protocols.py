@@ -1,7 +1,20 @@
-import base64,ipaddress,json,os,pwd,re,subprocess,tempfile
+import base64,fcntl,ipaddress,json,os,pwd,re,subprocess,tempfile
 from pathlib import Path
 from flask import current_app
 USER_RE=re.compile(r'^[a-z_][a-z0-9_-]{0,30}$')
+
+ACCOUNT_LOCK=Path('/run/lock/custom-panel-accounts.lock')
+
+class account_lock:
+    def __enter__(self):
+        ACCOUNT_LOCK.parent.mkdir(parents=True,exist_ok=True)
+        self._file=ACCOUNT_LOCK.open('a+')
+        fcntl.flock(self._file.fileno(),fcntl.LOCK_EX)
+        return self
+    def __exit__(self,exc_type,exc,tb):
+        fcntl.flock(self._file.fileno(),fcntl.LOCK_UN)
+        self._file.close()
+
 
 def run(args,input_text=None,check=True):
     return subprocess.run(args,input=input_text,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=20,check=check)
@@ -14,27 +27,32 @@ class SSH:
     def create(self,u):
         valid_user(u['username'])
         username=u['username']
-        exists=subprocess.run(['getent','passwd',username],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode==0
-        if exists:
-            # Adopt a leftover account from a previous interrupted create operation.
-            result=run(['usermod','-s','/usr/sbin/nologin',username],check=False)
+        with account_lock():
+            exists=subprocess.run(['getent','passwd',username],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode==0
+            if exists:
+                result=run(['usermod','-s','/usr/sbin/nologin',username],check=False)
+                if result.returncode!=0:
+                    raise RuntimeError(result.stderr.strip() or 'Failed to update existing Linux account')
+            else:
+                result=run(['useradd','-M','-N','-s','/usr/sbin/nologin',username],check=False)
+                if result.returncode!=0:
+                    if subprocess.run(['getent','passwd',username],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode!=0:
+                        raise RuntimeError(result.stderr.strip() or f'useradd failed with status {result.returncode}')
+            result=run(['chpasswd'], f"{username}:{u['password']}\n",check=False)
             if result.returncode!=0:
-                raise RuntimeError(result.stderr.strip() or 'Failed to update existing Linux account')
-        else:
-            # -N prevents failure when a same-name group already exists from an earlier attempt.
-            result=run(['useradd','-M','-N','-s','/usr/sbin/nologin',username],check=False)
+                raise RuntimeError(result.stderr.strip() or 'Failed to set Linux account password')
+            result=run(['usermod','-U',username],check=False)
             if result.returncode!=0:
-                # A concurrent/partial operation may have created it meanwhile. Adopt it when present.
-                if subprocess.run(['getent','passwd',username],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode!=0:
-                    raise RuntimeError(result.stderr.strip() or f'useradd failed with status {result.returncode}')
-        result=run(['chpasswd'], f"{username}:{u['password']}\n",check=False)
-        if result.returncode!=0:
-            raise RuntimeError(result.stderr.strip() or 'Failed to set Linux account password')
-        run(['usermod','-U',u['username']])
+                raise RuntimeError(result.stderr.strip() or 'Failed to unlock Linux account')
     update=create
-    def pause(self,u): run(['usermod','-L',u['username']]); run(['pkill','-KILL','-u',u['username']],check=False)
-    def resume(self,u): run(['usermod','-U',u['username']])
-    def delete(self,u): run(['pkill','-KILL','-u',u['username']],check=False); run(['userdel','-r',u['username']],check=False)
+    def pause(self,u):
+        with account_lock(): run(['usermod','-L',u['username']])
+        run(['pkill','-KILL','-u',u['username']],check=False)
+    def resume(self,u):
+        with account_lock(): run(['usermod','-U',u['username']])
+    def delete(self,u):
+        run(['pkill','-KILL','-u',u['username']],check=False)
+        with account_lock(): run(['userdel','-r',u['username']],check=False)
     def client(self,u):
         content = f"Host: {current_app.config['SERVER_HOST']}\nPort: 22\nUsername: {u['username']}\nPassword: {u['password']}\n"
         return {'type':'text','filename':f"{u['username']}-ssh.txt",'content':content}

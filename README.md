@@ -71,3 +71,9 @@ To update without cleaning the existing installation:
 curl -fsSL https://raw.githubusercontent.com/rima0222/ss/main/install.sh \
   | sudo env CUSTOM_PANEL_CLEAN_INSTALL=0 bash
 ```
+
+## v1.4 passwd lock fix
+
+- Removes `ProtectSystem=full`, which prevented `useradd` from creating `/etc/passwd.lock`.
+- Sets `ProtectSystem=no` because the panel intentionally manages Linux accounts.
+- Serializes `useradd`, `usermod`, `chpasswd`, and `userdel` with `/run/lock/custom-panel-accounts.lock` across Gunicorn workers.
