@@ -1,34 +1,27 @@
-# Custom Panel v9 Final — OpenSSH Only
+# Custom Panel — OpenSSH + SSH WebSocket
 
-A lightweight OpenSSH panel for Ubuntu 22.04/24.04.
+A lightweight SSH panel for Ubuntu 22.04 and 24.04.
 
-## Main capabilities
+## Features
 
-- One dedicated public SSH endpoint per user.
-- Accurate RX/TX counting at the assigned endpoint.
-- Real online state based on active endpoint connections.
-- Pause, resume, edit, delete and reset traffic.
-- Remaining days instead of expiry-date display.
+- OpenSSH TCP and SSH WebSocket.
+- User-specific TCP and WebSocket endpoints.
+- Accurate RX/TX accounting per endpoint.
+- Real online status for TCP and WebSocket separately.
+- Add, edit, pause, resume and delete users.
+- Change user password, quota and remaining days.
+- Enable or disable TCP/WS per user.
 - Automatic quota and time enforcement.
 - JSON backup and restore.
 - Encrypted user passwords at rest.
-- Hashed administrator password.
-- Dark responsive dashboard.
-- One Gunicorn worker and one asyncio proxy process.
-
-## v9 installer fixes
-
-- All services receive an explicit `PYTHONPATH=/etc/custom-panel`.
-- Python import tests run with the service user's identity and environment.
-- Fixes `ModuleNotFoundError: No module named 'app'`.
-- Verifies that the cloned repository contains all required files.
-- Removes stale passwd lock files only when account tools are not running.
-- Verifies permissions, service state, the login endpoint and panel listener.
-- Provides a complete diagnostic script.
+- Hashed panel administrator password.
+- Login rate limiting.
+- One asyncio proxy process and one Gunicorn worker.
+- Designed for low-memory VPS servers.
 
 ## Install
 
-Upload the ZIP contents directly to the root of the GitHub repository, then run:
+Upload these files directly to the root of your GitHub repository.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/rima0222/ss/main/install.sh -o /tmp/install.sh
@@ -36,13 +29,13 @@ bash -n /tmp/install.sh
 sudo bash /tmp/install.sh
 ```
 
-## Credentials
+## Panel credentials
 
 ```bash
 sudo bash /etc/custom-panel/show-credentials.sh
 ```
 
-Set a custom administrator password:
+Change the panel administrator password:
 
 ```bash
 sudo bash /etc/custom-panel/reset-admin-password.sh 'NEW_STRONG_PASSWORD'
@@ -54,11 +47,14 @@ sudo bash /etc/custom-panel/reset-admin-password.sh 'NEW_STRONG_PASSWORD'
 sudo bash /etc/custom-panel/diagnose.sh
 ```
 
-## Important accounting rule
+## Ports
 
-Traffic belongs to the dedicated public port, not to the SSH username discovered
-inside the encrypted connection. Each user must use the port assigned to that
-account. Using another account's port attributes traffic to that endpoint.
+- Panel: 5000/tcp
+- User OpenSSH endpoints: 20000-24999/tcp
+- User WebSocket endpoints: 25000-29999/tcp
 
-Shell and Python syntax have been validated. Real SSH connection and load tests
-must still be performed on the target VPS.
+Each user must use the endpoint assigned to that account. Traffic is attributed
+to the endpoint because the SSH username is inside the encrypted SSH session.
+
+Shell and Python syntax are validated in the release build. Actual SSH and
+WebSocket client tests must be performed after installation on the target VPS.

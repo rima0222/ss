@@ -16,17 +16,32 @@ CREATE TABLE IF NOT EXISTS users(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   username TEXT UNIQUE NOT NULL,
   password_enc TEXT NOT NULL,
-  port INTEGER UNIQUE NOT NULL,
+  tcp_enabled INTEGER NOT NULL DEFAULT 1,
+  ws_enabled INTEGER NOT NULL DEFAULT 1,
+  tcp_port INTEGER UNIQUE,
+  ws_port INTEGER UNIQUE,
+  ws_token TEXT UNIQUE,
   limit_bytes INTEGER NOT NULL DEFAULT 0,
   remaining_days INTEGER NOT NULL DEFAULT 30,
   paused INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'Active',
   rx_bytes INTEGER NOT NULL DEFAULT 0,
   tx_bytes INTEGER NOT NULL DEFAULT 0,
-  online INTEGER NOT NULL DEFAULT 0,
+  online_tcp INTEGER NOT NULL DEFAULT 0,
+  online_ws INTEGER NOT NULL DEFAULT 0,
   last_seen INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS endpoint_usage(
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  endpoint TEXT NOT NULL,
+  rx_bytes INTEGER NOT NULL DEFAULT 0,
+  tx_bytes INTEGER NOT NULL DEFAULT 0,
+  online INTEGER NOT NULL DEFAULT 0,
+  last_seen INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY(user_id, endpoint)
 );
 
 CREATE TABLE IF NOT EXISTS metadata(
@@ -34,10 +49,9 @@ CREATE TABLE IF NOT EXISTS metadata(
   value TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_users_runtime
-  ON users(paused,status,remaining_days);
-CREATE INDEX IF NOT EXISTS idx_users_port
-  ON users(port);
+CREATE INDEX IF NOT EXISTS idx_users_runtime ON users(paused,status,remaining_days);
+CREATE INDEX IF NOT EXISTS idx_users_tcp_port ON users(tcp_port);
+CREATE INDEX IF NOT EXISTS idx_users_ws_port ON users(ws_port);
 """
 
 def init_db(path):

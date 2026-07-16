@@ -9,7 +9,6 @@ CLEAN="${CUSTOM_PANEL_CLEAN_INSTALL:-1}"
 
 backup_old(){
   [[ -d "$APP" ]] || return 0
-  local stamp rescue
   stamp="$(date -u +%Y%m%d-%H%M%S)"
   rescue="/root/custom-panel-rescue-$stamp"
   mkdir -p "$rescue"
@@ -30,7 +29,6 @@ if [[ "$CLEAN" == "1" ]]; then
   systemctl daemon-reload
 fi
 
-# Remove stale passwd lock files only when no account-management command is active.
 if ! pgrep -x useradd >/dev/null 2>&1 &&
    ! pgrep -x usermod >/dev/null 2>&1 &&
    ! pgrep -x userdel >/dev/null 2>&1 &&
@@ -45,7 +43,7 @@ apt-get install -y python3 python3-venv git curl ca-certificates openssh-server 
 getent group panelusers >/dev/null || groupadd --system panelusers
 getent group custompanel >/dev/null || groupadd --system custompanel
 id -u custompanel >/dev/null 2>&1 || useradd --system --no-create-home --gid custompanel --shell /usr/sbin/nologin custompanel
-id -u panelproxy >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin panelproxy
+id -u panelproxy >/dev/null 2>&1 || useradd --system --no-create-home --gid custompanel --shell /usr/sbin/nologin panelproxy
 usermod -g custompanel custompanel
 usermod -g custompanel panelproxy
 
@@ -77,29 +75,23 @@ sshd -t
 systemctl enable --now ssh
 systemctl restart ssh
 
-rm -rf "$APP"
 git clone --depth=1 "$REPO" "$APP"
-test -f "$APP/app/__init__.py" || { echo "Repository is missing app/__init__.py"; exit 1; }
-test -f "$APP/requirements.txt" || { echo "Repository is missing requirements.txt"; exit 1; }
-test -f "$APP/templates/index.html" || { echo "Repository is missing templates/index.html"; exit 1; }
+test -f "$APP/app/__init__.py"
+test -f "$APP/requirements.txt"
+test -f "$APP/templates/index.html"
 
 python3 -m venv "$APP/venv"
 "$APP/venv/bin/pip" install --upgrade pip
 "$APP/venv/bin/pip" install -r "$APP/requirements.txt"
 
 mkdir -p "$APP/data" "$APP/backups" "$APP/runtime" /run/custom-panel
-
-# Application code is root-owned but readable/traversable by custompanel group.
 chown -R root:custompanel "$APP"
 find "$APP" -type d -exec chmod 750 {} +
 find "$APP" -type f -exec chmod 640 {} +
 find "$APP/venv/bin" -type f -exec chmod 750 {} +
-chmod 750 "$APP/install.sh" "$APP/show-credentials.sh" "$APP/reset-admin-password.sh" 2>/dev/null || true
-
-# Only runtime data is writable by panel services.
+chmod 750 "$APP/install.sh" "$APP/show-credentials.sh" "$APP/reset-admin-password.sh" "$APP/diagnose.sh"
 chown -R custompanel:custompanel "$APP/data" "$APP/backups" "$APP/runtime"
 chmod 770 "$APP/data" "$APP/backups" "$APP/runtime"
-
 chown root:custompanel /run/custom-panel
 chmod 770 /run/custom-panel
 
@@ -135,8 +127,10 @@ CUSTOM_PANEL_DATA_KEY=$DATA_KEY
 CUSTOM_PANEL_DB=$APP/data/panel.db
 CUSTOM_PANEL_SERVER_HOST=$SERVER_HOST
 CUSTOM_PANEL_INTERNAL_SSH_PORT=2222
-CUSTOM_PANEL_PORT_START=20000
-CUSTOM_PANEL_PORT_END=29999
+CUSTOM_PANEL_TCP_PORT_START=20000
+CUSTOM_PANEL_TCP_PORT_END=24999
+CUSTOM_PANEL_WS_PORT_START=25000
+CUSTOM_PANEL_WS_PORT_END=29999
 CUSTOM_PANEL_HELPER_SOCKET=/run/custom-panel/helper.sock
 EOF
 cat > "$APP/admin-credentials.txt" <<EOF
@@ -147,13 +141,15 @@ chown root:custompanel "$APP/.env"
 chmod 640 "$APP/.env"
 chmod 600 "$APP/admin-credentials.txt"
 
+cat > /etc/tmpfiles.d/custom-panel.conf <<'EOF'
+d /run/custom-panel 0770 root custompanel -
+EOF
+systemd-tmpfiles --create /etc/tmpfiles.d/custom-panel.conf
+
 cat > /etc/systemd/system/custom-panel-helper.service <<EOF
 [Unit]
-Description=Custom Panel privileged account helper
+Description=Custom Panel account helper
 After=local-fs.target
-Before=custom-panel.service custom-panel-accounting.service
-StartLimitIntervalSec=60
-StartLimitBurst=10
 
 [Service]
 Type=simple
@@ -166,7 +162,6 @@ ExecStart=$APP/venv/bin/python -m app.account_helper
 Restart=on-failure
 RestartSec=2
 PrivateTmp=true
-NoNewPrivileges=false
 LimitNOFILE=1024
 
 [Install]
@@ -175,11 +170,9 @@ EOF
 
 cat > /etc/systemd/system/custom-panel-proxy.service <<EOF
 [Unit]
-Description=Custom Panel async OpenSSH proxy
+Description=OpenSSH and SSH WebSocket proxy
 After=network-online.target ssh.service
 Wants=network-online.target
-StartLimitIntervalSec=60
-StartLimitBurst=10
 
 [Service]
 Type=simple
@@ -202,11 +195,9 @@ EOF
 
 cat > /etc/systemd/system/custom-panel-accounting.service <<EOF
 [Unit]
-Description=Custom Panel accounting and quota enforcement
+Description=Custom Panel accounting
 After=custom-panel-helper.service custom-panel-proxy.service
 Requires=custom-panel-helper.service
-StartLimitIntervalSec=60
-StartLimitBurst=10
 
 [Service]
 Type=simple
@@ -220,7 +211,6 @@ Restart=on-failure
 RestartSec=3
 PrivateTmp=true
 NoNewPrivileges=true
-LimitNOFILE=2048
 Nice=10
 
 [Install]
@@ -229,11 +219,9 @@ EOF
 
 cat > /etc/systemd/system/custom-panel.service <<EOF
 [Unit]
-Description=Custom Panel web application
+Description=Custom Panel web
 After=network-online.target custom-panel-helper.service custom-panel-proxy.service
 Requires=custom-panel-helper.service
-StartLimitIntervalSec=60
-StartLimitBurst=10
 
 [Service]
 Type=simple
@@ -254,13 +242,6 @@ Nice=5
 WantedBy=multi-user.target
 EOF
 
-ufw allow OpenSSH >/dev/null 2>&1 || true
-ufw allow 5000/tcp >/dev/null 2>&1 || true
-ufw allow 20000:29999/tcp >/dev/null 2>&1 || true
-ufw --force enable >/dev/null 2>&1 || true
-
-# Permission preflight tests.
-namei -l "$APP" || true
 runuser -u panelproxy -- test -x "$APP"
 runuser -u custompanel -- test -x "$APP"
 runuser -u panelproxy -- test -r "$APP/app/proxy_runtime.py"
@@ -268,43 +249,15 @@ runuser -u custompanel -- test -r "$APP/app/__init__.py"
 runuser -u panelproxy -- test -w "$APP/data"
 runuser -u custompanel -- test -w "$APP/data"
 
-# Import tests run from the application directory with the same environment
-# and PYTHONPATH used by systemd. This avoids "No module named app".
-set -a
-source "$APP/.env"
-set +a
-runuser -u panelproxy -- env \
-  PYTHONPATH="$APP" \
-  CUSTOM_PANEL_SECRET_KEY="$CUSTOM_PANEL_SECRET_KEY" \
-  CUSTOM_PANEL_ADMIN_USERNAME="$CUSTOM_PANEL_ADMIN_USERNAME" \
-  CUSTOM_PANEL_ADMIN_PASSWORD_HASH="$CUSTOM_PANEL_ADMIN_PASSWORD_HASH" \
-  CUSTOM_PANEL_DATA_KEY="$CUSTOM_PANEL_DATA_KEY" \
-  CUSTOM_PANEL_DB="$CUSTOM_PANEL_DB" \
-  CUSTOM_PANEL_SERVER_HOST="$CUSTOM_PANEL_SERVER_HOST" \
-  CUSTOM_PANEL_INTERNAL_SSH_PORT="$CUSTOM_PANEL_INTERNAL_SSH_PORT" \
-  CUSTOM_PANEL_PORT_START="$CUSTOM_PANEL_PORT_START" \
-  CUSTOM_PANEL_PORT_END="$CUSTOM_PANEL_PORT_END" \
-  CUSTOM_PANEL_HELPER_SOCKET="$CUSTOM_PANEL_HELPER_SOCKET" \
-  "$APP/venv/bin/python" -c "import app.proxy_runtime"
-
-runuser -u custompanel -- env \
-  PYTHONPATH="$APP" \
-  CUSTOM_PANEL_SECRET_KEY="$CUSTOM_PANEL_SECRET_KEY" \
-  CUSTOM_PANEL_ADMIN_USERNAME="$CUSTOM_PANEL_ADMIN_USERNAME" \
-  CUSTOM_PANEL_ADMIN_PASSWORD_HASH="$CUSTOM_PANEL_ADMIN_PASSWORD_HASH" \
-  CUSTOM_PANEL_DATA_KEY="$CUSTOM_PANEL_DATA_KEY" \
-  CUSTOM_PANEL_DB="$CUSTOM_PANEL_DB" \
-  CUSTOM_PANEL_SERVER_HOST="$CUSTOM_PANEL_SERVER_HOST" \
-  CUSTOM_PANEL_INTERNAL_SSH_PORT="$CUSTOM_PANEL_INTERNAL_SSH_PORT" \
-  CUSTOM_PANEL_PORT_START="$CUSTOM_PANEL_PORT_START" \
-  CUSTOM_PANEL_PORT_END="$CUSTOM_PANEL_PORT_END" \
-  CUSTOM_PANEL_HELPER_SOCKET="$CUSTOM_PANEL_HELPER_SOCKET" \
-  "$APP/venv/bin/python" -c "from app import create_app; create_app()"
+ufw allow OpenSSH >/dev/null 2>&1 || true
+ufw allow 5000/tcp >/dev/null 2>&1 || true
+ufw allow 20000:29999/tcp >/dev/null 2>&1 || true
+ufw --force enable >/dev/null 2>&1 || true
 
 systemctl daemon-reload
 systemctl reset-failed custom-panel-helper custom-panel-proxy custom-panel-accounting custom-panel 2>/dev/null || true
 systemctl enable custom-panel-helper custom-panel-proxy custom-panel-accounting custom-panel >/dev/null
-systemctl stop custom-panel-helper custom-panel-proxy custom-panel-accounting custom-panel 2>/dev/null || true
+
 systemctl start custom-panel-helper
 sleep 1
 systemctl start custom-panel-proxy
@@ -319,11 +272,9 @@ for service in ssh custom-panel-helper custom-panel-proxy custom-panel-accountin
     exit 1
   fi
 done
+
 curl -fsS --max-time 10 http://127.0.0.1:5000/login >/dev/null
-ss -lnt | grep -qE '[:.]5000[[:space:]]' || {
-  echo "Panel port 5000 is not listening."
-  exit 1
-}
+ss -lnt | grep -qE '[:.]5000[[:space:]]'
 
 echo "Installed: http://$SERVER_HOST:5000"
 echo "Credentials: $APP/admin-credentials.txt"

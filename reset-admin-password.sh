@@ -14,6 +14,6 @@ PY
 )"
 sed -i "s|^CUSTOM_PANEL_ADMIN_PASSWORD_HASH=.*|CUSTOM_PANEL_ADMIN_PASSWORD_HASH=$HASH|" "$APP/.env"
 printf 'Username: admin\nPassword: %s\n' "$PASS" > "$APP/admin-credentials.txt"
-chmod 600 "$APP/.env" "$APP/admin-credentials.txt"
+chmod 600 "$APP/admin-credentials.txt"
 systemctl restart custom-panel
 cat "$APP/admin-credentials.txt"

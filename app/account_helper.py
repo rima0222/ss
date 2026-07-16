@@ -1,4 +1,5 @@
 import fcntl
+import grp
 import json
 import os
 import re
@@ -15,13 +16,9 @@ def run(args, input_text=None, check=True):
     last = None
     for attempt in range(4):
         result = subprocess.run(
-            args,
-            input=input_text,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=30,
-            check=False,
+            args, input=input_text, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=30, check=False,
         )
         if result.returncode == 0 or not check:
             return result
@@ -39,7 +36,7 @@ def validate(username):
 def exists(username):
     return run(["getent", "passwd", username], check=False).returncode == 0
 
-def locked_call(action, username, password=None):
+def perform(action, username, password=None):
     validate(username)
     LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
     with LOCK_PATH.open("a+") as lock:
@@ -51,12 +48,12 @@ def locked_call(action, username, password=None):
             if not exists(username):
                 run([
                     "useradd", "-M", "-N", "-G", "panelusers",
-                    "-s", "/usr/local/bin/panel-hold", username,
+                    "-s", "/usr/local/bin/panel-hold", username
                 ])
             else:
                 run([
                     "usermod", "-a", "-G", "panelusers",
-                    "-s", "/usr/local/bin/panel-hold", username,
+                    "-s", "/usr/local/bin/panel-hold", username
                 ])
             run(["chpasswd"], f"{username}:{password}\n")
             run(["usermod", "-U", username], check=False)
@@ -83,12 +80,8 @@ def handle(conn):
             if not chunk:
                 break
             raw += chunk
-        request = json.loads(raw.decode())
-        locked_call(
-            request.get("action", ""),
-            request.get("username", ""),
-            request.get("password"),
-        )
+        req = json.loads(raw.decode())
+        perform(req.get("action", ""), req.get("username", ""), req.get("password"))
         response = {"ok": True}
     except Exception as exc:
         response = {"ok": False, "error": str(exc)}
@@ -97,11 +90,9 @@ def handle(conn):
 def main():
     SOCKET_PATH.parent.mkdir(parents=True, exist_ok=True)
     SOCKET_PATH.unlink(missing_ok=True)
-
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
         server.bind(str(SOCKET_PATH))
         os.chmod(SOCKET_PATH, 0o660)
-        import grp
         os.chown(SOCKET_PATH, 0, grp.getgrnam("custompanel").gr_gid)
         server.listen(64)
         while True:

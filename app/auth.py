@@ -6,7 +6,6 @@ from flask import Blueprint, current_app, redirect, render_template, request, se
 from werkzeug.security import check_password_hash
 
 auth_bp = Blueprint("auth", __name__)
-
 _ATTEMPTS = defaultdict(deque)
 WINDOW = 300
 MAX_ATTEMPTS = 8
@@ -22,7 +21,7 @@ def login_required(view):
 def client_key():
     return request.headers.get("X-Forwarded-For", request.remote_addr or "unknown").split(",")[0].strip()
 
-def is_limited(key):
+def limited(key):
     now = time.time()
     q = _ATTEMPTS[key]
     while q and now - q[0] > WINDOW:
@@ -34,8 +33,8 @@ def login():
     error = None
     key = client_key()
     if request.method == "POST":
-        if is_limited(key):
-            return render_template("login.html", error="تلاش‌های ورود بیش از حد است. چند دقیقه بعد دوباره امتحان کن."), 429
+        if limited(key):
+            return render_template("login.html", error="تلاش ورود بیش از حد است. چند دقیقه بعد دوباره امتحان کن."), 429
         valid = (
             request.form.get("username") == current_app.config["ADMIN_USERNAME"]
             and check_password_hash(
@@ -47,7 +46,6 @@ def login():
             _ATTEMPTS.pop(key, None)
             session.clear()
             session["admin"] = True
-            session.permanent = False
             return redirect(url_for("users.index"))
         _ATTEMPTS[key].append(time.time())
         error = "نام کاربری یا رمز عبور اشتباه است."

@@ -1,8 +1,6 @@
 function filterRows(){
  const q=document.getElementById('search').value.trim().toLowerCase();
- document.querySelectorAll('#rows tr').forEach(row=>{
-  row.hidden=q&&!row.dataset.search.includes(q);
- });
+ document.querySelectorAll('#rows tr').forEach(row=>row.hidden=q&&!row.dataset.search.includes(q));
 }
 async function refreshStats(){
  try{
@@ -15,20 +13,18 @@ async function refreshStats(){
   for(const [name,item] of Object.entries(data.users||{})){
    const used=document.querySelector(`[data-used="${CSS.escape(name)}"]`);
    if(used)used.textContent=item.used;
-   const online=document.querySelector(`[data-online="${CSS.escape(name)}"]`);
-   if(online){
-    online.textContent=item.online?'● Online':'○ Offline';
-    online.classList.toggle('active',item.online);
-   }
+   const tcp=document.querySelector(`[data-online-tcp="${CSS.escape(name)}"]`);
+   if(tcp){tcp.textContent=item.online_tcp?'● TCP':'○ TCP';tcp.classList.toggle('active',item.online_tcp);}
+   const ws=document.querySelector(`[data-online-ws="${CSS.escape(name)}"]`);
+   if(ws){ws.textContent=item.online_ws?'● WS':'○ WS';ws.classList.toggle('active',item.online_ws);}
    const days=document.querySelector(`[data-days="${CSS.escape(name)}"]`);
    if(days)days.textContent=`${item.remaining_days} روز`;
    const progress=document.querySelector(`[data-progress="${CSS.escape(name)}"]`);
    if(progress){
-    const percent=item.limit_bytes>0?Math.min(100,item.used_bytes/item.limit_bytes*100):0;
-    progress.style.width=`${percent}%`;
+    const p=item.limit_bytes>0?Math.min(100,item.used_bytes/item.limit_bytes*100):0;
+    progress.style.width=`${p}%`;
    }
   }
  }catch(_){}
 }
-refreshStats();
-setInterval(refreshStats,5000);
+refreshStats();setInterval(refreshStats,5000);

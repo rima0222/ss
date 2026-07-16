@@ -1,4 +1,4 @@
-import subprocess
+import secrets
 from io import BytesIO
 
 from flask import Blueprint, current_app, flash, redirect, render_template, request, send_file, url_for
@@ -6,8 +6,8 @@ from flask import Blueprint, current_app, flash, redirect, render_template, requ
 from .auth import login_required
 from .crypto import decrypt, encrypt
 from .db import connect
-from .helper_client import request_helper
-from .ports import allocate
+from .helper_client import account_action
+from .ports import allocate_tcp, allocate_ws
 from .security import validate_csrf
 
 users_bp = Blueprint("users", __name__)
@@ -18,8 +18,7 @@ def get_user(username):
     return dict(row) if row else None
 
 def human_bytes(value):
-    value = int(value or 0)
-    size = float(value)
+    size = float(int(value or 0))
     for unit in ("B", "KB", "MB", "GB", "TB"):
         if size < 1024 or unit == "TB":
             return f"{size:.2f} {unit}"
@@ -27,18 +26,18 @@ def human_bytes(value):
 
 def list_users():
     with connect() as conn:
-        rows = [dict(row) for row in conn.execute("SELECT * FROM users ORDER BY id DESC")]
-    for user in rows:
+        users = [dict(row) for row in conn.execute("SELECT * FROM users ORDER BY id DESC")]
+    for user in users:
         used = int(user["rx_bytes"] or 0) + int(user["tx_bytes"] or 0)
         user["used_bytes"] = used
         user["used_human"] = human_bytes(used)
-        user["limit_gb"] = int(user["limit_bytes"] or 0) / (1024**3)
+        user["limit_gb"] = int(user["limit_bytes"] or 0) / 1024**3
         user["percent"] = min(
             100,
             used / int(user["limit_bytes"]) * 100
             if int(user["limit_bytes"] or 0) > 0 else 0,
         )
-    return rows
+    return users
 
 @users_bp.get("/")
 @login_required
@@ -54,22 +53,33 @@ def add():
         password = request.form["password"]
         limit_gb = float(request.form["limit_gb"])
         days = int(request.form["remaining_days"])
+        methods = set(request.form.getlist("methods"))
+        tcp_enabled = int("tcp" in methods)
+        ws_enabled = int("ws" in methods)
+
+        if not tcp_enabled and not ws_enabled:
+            raise ValueError("حداقل یک روش اتصال انتخاب کن.")
         if limit_gb < 0 or days < 1:
             raise ValueError("حجم یا زمان نامعتبر است.")
         if get_user(username):
             raise ValueError("این نام کاربری قبلاً وجود دارد.")
 
-        request_helper("upsert", username, password)
-        port = allocate()
+        account_action("upsert", username, password)
 
         with connect() as conn:
             conn.execute("""
-            INSERT INTO users(username,password_enc,port,limit_bytes,remaining_days)
-            VALUES(?,?,?,?,?)
+            INSERT INTO users(
+              username,password_enc,tcp_enabled,ws_enabled,
+              tcp_port,ws_port,ws_token,limit_bytes,remaining_days
+            ) VALUES(?,?,?,?,?,?,?,?,?)
             """, (
                 username,
                 encrypt(password),
-                port,
+                tcp_enabled,
+                ws_enabled,
+                allocate_tcp() if tcp_enabled else None,
+                allocate_ws() if ws_enabled else None,
+                secrets.token_urlsafe(18) if ws_enabled else None,
                 int(limit_gb * 1024**3),
                 days,
             ))
@@ -88,28 +98,39 @@ def edit(username):
         return redirect(url_for("users.index"))
     try:
         password = request.form.get("password") or decrypt(user["password_enc"])
-        limit_gb = float(request.form.get("limit_gb", int(user["limit_bytes"])/(1024**3)))
+        limit_gb = float(request.form.get("limit_gb", int(user["limit_bytes"])/1024**3))
         days = int(request.form.get("remaining_days", user["remaining_days"]))
+        methods = set(request.form.getlist("methods"))
+        tcp_enabled = int("tcp" in methods)
+        ws_enabled = int("ws" in methods)
+
+        if not tcp_enabled and not ws_enabled:
+            raise ValueError("حداقل یک روش اتصال انتخاب کن.")
         if limit_gb < 0 or days < 0:
             raise ValueError("مقادیر نامعتبر هستند.")
 
-        request_helper("upsert", username, password)
+        account_action("upsert", username, password)
+
+        tcp_port = user["tcp_port"] if tcp_enabled and user["tcp_port"] else (allocate_tcp() if tcp_enabled else None)
+        ws_port = user["ws_port"] if ws_enabled and user["ws_port"] else (allocate_ws() if ws_enabled else None)
+        ws_token = user["ws_token"] if ws_enabled and user["ws_token"] else (secrets.token_urlsafe(18) if ws_enabled else None)
+
         with connect() as conn:
             conn.execute("""
-            UPDATE users
-            SET password_enc=?,limit_bytes=?,remaining_days=?,
-                status=CASE WHEN paused=0 AND ?>0 THEN 'Active' ELSE status END,
-                updated_at=CURRENT_TIMESTAMP
+            UPDATE users SET
+              password_enc=?,tcp_enabled=?,ws_enabled=?,
+              tcp_port=?,ws_port=?,ws_token=?,
+              limit_bytes=?,remaining_days=?,
+              status=CASE WHEN paused=0 AND ?>0 THEN 'Active' ELSE status END,
+              updated_at=CURRENT_TIMESTAMP
             WHERE username=?
             """, (
-                encrypt(password),
-                int(limit_gb * 1024**3),
-                days,
-                days,
-                username,
+                encrypt(password), tcp_enabled, ws_enabled,
+                tcp_port, ws_port, ws_token,
+                int(limit_gb * 1024**3), days, days, username,
             ))
             conn.commit()
-        flash("تغییرات ذخیره شد.", "success")
+        flash("ویرایش ذخیره شد.", "success")
     except Exception as exc:
         flash(f"خطا: {exc}", "error")
     return redirect(url_for("users.index"))
@@ -123,38 +144,40 @@ def action(username, action):
         return redirect(url_for("users.index"))
     try:
         if action == "pause":
-            request_helper("pause", username)
+            account_action("pause", username)
             with connect() as conn:
-                conn.execute(
-                    "UPDATE users SET paused=1,status='Paused',online=0 WHERE username=?",
-                    (username,),
-                )
+                conn.execute("""
+                UPDATE users SET paused=1,status='Paused',online_tcp=0,online_ws=0
+                WHERE username=?
+                """, (username,))
                 conn.commit()
-            restart_proxy()
+
         elif action == "resume":
             if int(user["remaining_days"]) <= 0:
                 raise ValueError("ابتدا زمان باقی‌مانده را افزایش بده.")
-            request_helper("resume", username)
+            account_action("resume", username)
             with connect() as conn:
                 conn.execute(
                     "UPDATE users SET paused=0,status='Active' WHERE username=?",
                     (username,),
                 )
                 conn.commit()
-            restart_proxy()
+
         elif action == "reset-traffic":
             with connect() as conn:
-                conn.execute(
-                    "UPDATE users SET rx_bytes=0,tx_bytes=0 WHERE username=?",
-                    (username,),
-                )
+                conn.execute("DELETE FROM endpoint_usage WHERE user_id=?", (user["id"],))
+                conn.execute("""
+                UPDATE users SET rx_bytes=0,tx_bytes=0,online_tcp=0,online_ws=0
+                WHERE id=?
+                """, (user["id"],))
                 conn.commit()
+
         elif action == "delete":
-            request_helper("delete", username)
+            account_action("delete", username)
             with connect() as conn:
                 conn.execute("DELETE FROM users WHERE username=?", (username,))
                 conn.commit()
-            restart_proxy()
+
         flash("عملیات انجام شد.", "success")
     except Exception as exc:
         flash(f"خطا: {exc}", "error")
@@ -166,16 +189,29 @@ def config(username):
     user = get_user(username)
     if not user:
         return ("Not found", 404)
-    content = (
-        f"Server: {current_app.config['SERVER_HOST']}\n"
-        f"Port: {user['port']}\n"
-        f"Username: {user['username']}\n"
-        f"Password: {decrypt(user['password_enc'])}\n"
-        f"Remaining days: {user['remaining_days']}\n"
-    )
+
+    host = current_app.config["SERVER_HOST"]
+    lines = [
+        f"Username: {user['username']}",
+        f"Password: {decrypt(user['password_enc'])}",
+        f"Remaining days: {user['remaining_days']}",
+        "",
+    ]
+    if user["tcp_enabled"]:
+        lines += ["OpenSSH TCP", f"Host: {host}", f"Port: {user['tcp_port']}", ""]
+    if user["ws_enabled"]:
+        lines += [
+            "SSH WebSocket",
+            f"URL: ws://{host}:{user['ws_port']}/ws/{user['ws_token']}",
+            f"Host: {host}",
+            f"Port: {user['ws_port']}",
+            f"Path: /ws/{user['ws_token']}",
+            "",
+        ]
+
     return send_file(
-        BytesIO(content.encode()),
+        BytesIO("\n".join(lines).encode()),
         as_attachment=True,
-        download_name=f"{username}-ssh.txt",
+        download_name=f"{username}-ssh-config.txt",
         mimetype="text/plain",
     )
