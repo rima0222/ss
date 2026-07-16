@@ -13,13 +13,23 @@ class SSH:
     name='ssh'
     def create(self,u):
         valid_user(u['username'])
-        try:
-            pwd.getpwnam(u['username'])
-            # Adopt a leftover panel account from an interrupted installation/create operation.
-            run(['usermod','-s','/usr/sbin/nologin',u['username']])
-        except KeyError:
-            run(['useradd','-M','-s','/usr/sbin/nologin',u['username']])
-        run(['chpasswd'], f"{u['username']}:{u['password']}\n")
+        username=u['username']
+        exists=subprocess.run(['getent','passwd',username],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode==0
+        if exists:
+            # Adopt a leftover account from a previous interrupted create operation.
+            result=run(['usermod','-s','/usr/sbin/nologin',username],check=False)
+            if result.returncode!=0:
+                raise RuntimeError(result.stderr.strip() or 'Failed to update existing Linux account')
+        else:
+            # -N prevents failure when a same-name group already exists from an earlier attempt.
+            result=run(['useradd','-M','-N','-s','/usr/sbin/nologin',username],check=False)
+            if result.returncode!=0:
+                # A concurrent/partial operation may have created it meanwhile. Adopt it when present.
+                if subprocess.run(['getent','passwd',username],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode!=0:
+                    raise RuntimeError(result.stderr.strip() or f'useradd failed with status {result.returncode}')
+        result=run(['chpasswd'], f"{username}:{u['password']}\n",check=False)
+        if result.returncode!=0:
+            raise RuntimeError(result.stderr.strip() or 'Failed to set Linux account password')
         run(['usermod','-U',u['username']])
     update=create
     def pause(self,u): run(['usermod','-L',u['username']]); run(['pkill','-KILL','-u',u['username']],check=False)

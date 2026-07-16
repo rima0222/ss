@@ -3,13 +3,6 @@ function filterRows(){
   document.querySelectorAll('#rows tr').forEach(r=>r.hidden=q&&!r.dataset.q.includes(q));
 }
 
-function bytes(v){
-  v=Number(v)||0;
-  const units=['B','KB','MB','GB','TB'];
-  let i=0;
-  while(v>=1024&&i<units.length-1){v/=1024;i++;}
-  return `${v.toFixed(i?2:0)} ${units[i]}`;
-}
 
 async function stats(){
   try{
@@ -41,10 +34,6 @@ async function live(){
         const onlineProtocols=Object.entries(s.protocols||{}).filter(([,v])=>v.online).map(([k])=>k);
         state.title=onlineProtocols.length?`Online: ${onlineProtocols.join(', ')}`:'No active connection';
       }
-      const rx=document.querySelector(`[data-rx="${CSS.escape(name)}"]`);
-      const tx=document.querySelector(`[data-tx="${CSS.escape(name)}"]`);
-      if(rx) rx.textContent='↓ '+bytes(s.rx_bytes);
-      if(tx) tx.textContent='↑ '+bytes(s.tx_bytes);
     }
   }catch(e){}
 }

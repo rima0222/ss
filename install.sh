@@ -1,5 +1,146 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+# ---------------------------------------------------------------------------
+# Clean reinstall
+# ---------------------------------------------------------------------------
+# This installer intentionally replaces previous Custom Panel installations.
+# Before removal it stores an emergency copy under /root/custom-panel-rescue-*.
+#
+# It does NOT remove the current root/administrator SSH account and does not
+# rewrite the main OpenSSH server configuration.
+#
+# Set CUSTOM_PANEL_CLEAN_INSTALL=0 to perform an in-place update instead.
+CLEAN_INSTALL="${CUSTOM_PANEL_CLEAN_INSTALL:-1}"
+APP_DIR="${APP_DIR:-/etc/custom-panel}"
+SERVICE_NAME="${SERVICE_NAME:-custom-panel}"
+
+backup_existing_install() {
+    if [[ ! -e "${APP_DIR}" ]]; then
+        return 0
+    fi
+
+    local stamp rescue
+    stamp="$(date -u +%Y%m%d-%H%M%S)"
+    rescue="/root/custom-panel-rescue-${stamp}"
+    mkdir -p "${rescue}"
+
+    echo "[*] Saving emergency copy to ${rescue}"
+
+    for item in \
+        "${APP_DIR}/data" \
+        "${APP_DIR}/backups" \
+        "${APP_DIR}/.env" \
+        "${APP_DIR}/admin-credentials.txt"; do
+        if [[ -e "${item}" ]]; then
+            cp -a "${item}" "${rescue}/"
+        fi
+    done
+
+    if [[ -f "${APP_DIR}/data/panel.db" ]] && command -v sqlite3 >/dev/null 2>&1; then
+        sqlite3 "${APP_DIR}/data/panel.db" ".backup '${rescue}/panel.db'" 2>/dev/null || true
+
+        # Save usernames managed by the panel so only those accounts can be
+        # removed. Failure is harmless and leaves Linux accounts untouched.
+        sqlite3 -noheader "${APP_DIR}/data/panel.db" \
+            "SELECT username FROM users WHERE username IS NOT NULL;" \
+            > "${rescue}/managed-users.txt" 2>/dev/null || true
+    fi
+
+    tar -C /root -czf "${rescue}.tar.gz" "$(basename "${rescue}")" 2>/dev/null || true
+}
+
+remove_managed_linux_users() {
+    local rescue_dir users_file username
+    rescue_dir="$(find /root -maxdepth 1 -type d -name 'custom-panel-rescue-*' -printf '%T@ %p\n' 2>/dev/null \
+        | sort -nr | head -n1 | cut -d' ' -f2- || true)"
+    users_file="${rescue_dir}/managed-users.txt"
+
+    [[ -f "${users_file}" ]] || return 0
+
+    while IFS= read -r username; do
+        [[ -n "${username}" ]] || continue
+
+        # Strict validation prevents command/argument injection.
+        if [[ ! "${username}" =~ ^[a-z_][a-z0-9_-]{0,30}$ ]]; then
+            echo "[!] Skipping invalid stored username: ${username}"
+            continue
+        fi
+
+        case "${username}" in
+            root|ubuntu|admin|sshd|nobody)
+                echo "[!] Protected system account was not removed: ${username}"
+                continue
+                ;;
+        esac
+
+        if getent passwd "${username}" >/dev/null 2>&1; then
+            pkill -KILL -u "${username}" 2>/dev/null || true
+            userdel -r "${username}" 2>/dev/null || userdel "${username}" 2>/dev/null || true
+        fi
+    done < "${users_file}"
+}
+
+clean_previous_install() {
+    echo "[*] Stopping previous Custom Panel services"
+
+    systemctl disable --now custom-panel.service 2>/dev/null || true
+    systemctl disable --now custom-panel-wg-restore.service 2>/dev/null || true
+    systemctl disable --now wg-quick@wg0.service 2>/dev/null || true
+    systemctl disable --now openvpn-server@server.service 2>/dev/null || true
+
+    # Support service names used by different Ubuntu/strongSwan packages.
+    for unit in strongswan.service strongswan-swanctl.service strongswan-starter.service charon-systemd.service; do
+        systemctl disable --now "${unit}" 2>/dev/null || true
+    done
+
+    backup_existing_install
+    remove_managed_linux_users
+
+    echo "[*] Removing previous panel-owned files"
+    rm -f /etc/systemd/system/custom-panel.service
+    rm -f /etc/systemd/system/custom-panel-wg-restore.service
+    rm -rf "${APP_DIR}"
+
+    # Remove only configurations/interfaces created by this project.
+    rm -f /etc/wireguard/wg0.conf
+    rm -f /etc/openvpn/server/server.conf
+    rm -rf /etc/openvpn/server/easy-rsa
+    rm -f /etc/swanctl/conf.d/custom-panel.conf
+    rm -f /etc/swanctl/conf.d/custom-panel-users.conf
+    rm -rf /etc/swanctl/x509/custom-panel
+    rm -rf /etc/swanctl/x509ca/custom-panel
+    rm -rf /etc/swanctl/private/custom-panel
+
+    ip link delete wg0 2>/dev/null || true
+
+    # Remove firewall rules by exact match, if they were previously inserted.
+    while iptables -C FORWARD -i wg0 -j ACCEPT 2>/dev/null; do
+        iptables -D FORWARD -i wg0 -j ACCEPT 2>/dev/null || break
+    done
+    while iptables -C FORWARD -o wg0 -j ACCEPT 2>/dev/null; do
+        iptables -D FORWARD -o wg0 -j ACCEPT 2>/dev/null || break
+    done
+    while iptables -C FORWARD -i tun0 -j ACCEPT 2>/dev/null; do
+        iptables -D FORWARD -i tun0 -j ACCEPT 2>/dev/null || break
+    done
+    while iptables -C FORWARD -o tun0 -j ACCEPT 2>/dev/null; do
+        iptables -D FORWARD -o tun0 -j ACCEPT 2>/dev/null || break
+    done
+
+    # UFW rules are removed only for panel-specific ports.
+    ufw --force delete allow 5000/tcp >/dev/null 2>&1 || true
+    ufw --force delete allow 51820/udp >/dev/null 2>&1 || true
+    ufw --force delete allow 1194/udp >/dev/null 2>&1 || true
+    ufw --force delete allow 500/udp >/dev/null 2>&1 || true
+    ufw --force delete allow 4500/udp >/dev/null 2>&1 || true
+
+    systemctl daemon-reload
+    systemctl reset-failed 2>/dev/null || true
+}
+
+if [[ "${CLEAN_INSTALL}" == "1" ]]; then
+    clean_previous_install
+fi
 APP_DIR=/etc/custom-panel
 REPO_URL="${CUSTOM_PANEL_REPO_URL:-https://github.com/rima0222/ss.git}"
 SERVER_HOST="${PANEL_SERVER_HOST:-$(curl -4fsS --max-time 10 https://api.ipify.org || hostname -I | awk '{print $1}')}"

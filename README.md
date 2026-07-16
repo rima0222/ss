@@ -39,3 +39,35 @@ Restore accepts both the old list-shaped JSON backup and the new versioned forma
 - WireGuard peers are restored automatically after reboot.
 - Dashboard displays live online state plus WireGuard/OpenVPN receive and transmit counters.
 - Existing installations update with the same one-line installer.
+
+## v1.2 changes
+
+- Removed live traffic counters from the dashboard.
+- Shows remaining validity days instead of the raw expiry date.
+- Robust Linux user creation using `useradd -N`, with recovery from leftover accounts/groups and useful stderr messages.
+
+## Clean installation behavior
+
+The one-line installer performs a clean reinstall by default:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/rima0222/ss/main/install.sh | sudo bash
+```
+
+Before cleanup, it creates an emergency rescue archive under:
+
+```text
+/root/custom-panel-rescue-YYYYMMDD-HHMMSS.tar.gz
+```
+
+The cleanup removes only Custom Panel services, its database/application directory,
+its `wg0`, OpenVPN server configuration, Custom Panel strongSwan fragments, and users
+listed in the panel database. Protected accounts such as `root` and `ubuntu` are never removed.
+The primary OpenSSH server configuration is not rewritten.
+
+To update without cleaning the existing installation:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/rima0222/ss/main/install.sh \
+  | sudo env CUSTOM_PANEL_CLEAN_INSTALL=0 bash
+```

@@ -9,10 +9,20 @@ from .security import validate_csrf
 users_bp=Blueprint('users',__name__)
 
 def list_users():
+    today=dt.date.today()
     with connect() as c:
         rows=c.execute("""SELECT u.*,GROUP_CONCAT(CASE WHEN p.enabled=1 THEN p.protocol END) protocols
           FROM users u LEFT JOIN user_protocols p ON p.user_id=u.id GROUP BY u.id ORDER BY u.id DESC""").fetchall()
-    return [dict(x) for x in rows]
+    users=[]
+    for row in rows:
+        item=dict(row)
+        try:
+            remaining=(dt.date.fromisoformat(item.get('expire_date'))-today).days
+            item['remaining_days']=max(0,remaining)
+        except (TypeError,ValueError):
+            item['remaining_days']=0
+        users.append(item)
+    return users
 
 def get_user(name):
     with connect() as c:
