@@ -96,6 +96,7 @@ clean_previous_install() {
 
     echo "[*] Removing previous panel-owned files"
     rm -f /etc/systemd/system/custom-panel.service
+    rm -f /etc/systemd/system/custom-panel-wg-restore.service
     rm -f /etc/systemd/system/custom-panel-accounting.service
     rm -rf "${APP_DIR}"
 
@@ -108,18 +109,6 @@ clean_previous_install() {
 
 
     # Remove firewall rules by exact match, if they were previously inserted.
-    while iptables -C FORWARD -i wg0 -j ACCEPT 2>/dev/null; do
-        iptables -D FORWARD -i wg0 -j ACCEPT 2>/dev/null || break
-    done
-    while iptables -C FORWARD -o wg0 -j ACCEPT 2>/dev/null; do
-        iptables -D FORWARD -o wg0 -j ACCEPT 2>/dev/null || break
-    done
-    while iptables -C FORWARD -i tun0 -j ACCEPT 2>/dev/null; do
-        iptables -D FORWARD -i tun0 -j ACCEPT 2>/dev/null || break
-    done
-    while iptables -C FORWARD -o tun0 -j ACCEPT 2>/dev/null; do
-        iptables -D FORWARD -o tun0 -j ACCEPT 2>/dev/null || break
-    done
 
     # UFW rules are removed only for panel-specific ports.
     ufw --force delete allow 5000/tcp >/dev/null 2>&1 || true
@@ -251,19 +240,8 @@ if ! systemctl is-active --quiet strongswan.service; then
   journalctl -u strongswan.service -n 100 --no-pager || true
   exit 1
 fi
-swanctl --load-all
+SWANCTL_PLUGIN_DIR=/usr/lib/ipsec/plugins swanctl --load-all 2> >(grep -v "^plugin .*failed to load" >&2)
 
-[Unit]
-Description=Restore Custom Panel WireGuard peers
-
-[Service]
-Type=oneshot
-ExecStart=$APP_DIR/venv/bin/python $APP_DIR/app/wg_restore.py
-RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
-EOF
 
 cat > /etc/systemd/system/custom-panel-accounting.service <<EOF
 [Unit]
@@ -279,7 +257,7 @@ ExecStart=$APP_DIR/venv/bin/python -m app.accounting_worker
 Restart=always
 RestartSec=5
 ProtectSystem=no
-ReadWritePaths=$APP_DIR/data $APP_DIR/runtime /etc/wireguard /run
+ReadWritePaths=$APP_DIR/data $APP_DIR/runtime /etc/swanctl /run
 
 [Install]
 WantedBy=multi-user.target
@@ -303,7 +281,7 @@ PrivateTmp=true
 ProtectHome=true
 ProtectSystem=no
 # This service intentionally manages Linux users in /etc/passwd and /etc/shadow.
-ReadWritePaths=$APP_DIR/data $APP_DIR/backups $APP_DIR/runtime /etc/wireguard /etc/openvpn /run
+ReadWritePaths=$APP_DIR/data $APP_DIR/backups $APP_DIR/runtime /etc/swanctl /run
 LimitNOFILE=65535
 
 [Install]
@@ -315,8 +293,6 @@ sed -i 's/--bind 127.0.0.1:5000/--bind 0.0.0.0:5000/' /etc/systemd/system/custom
 
 # Permit routed VPN traffic through UFW without changing the global forward policy.
 WAN_IF=$(ip route show default | awk '/default/ {print $5; exit}')
-ufw route allow in on wg0 out on "$WAN_IF" >/dev/null 2>&1 || true
-ufw route allow in on tun0 out on "$WAN_IF" >/dev/null 2>&1 || true
 
 ufw allow OpenSSH >/dev/null || true
 ufw allow 5000/tcp >/dev/null || true
@@ -328,6 +304,23 @@ systemctl enable --now custom-panel-accounting
 systemctl restart custom-panel-accounting
 systemctl enable --now custom-panel
 systemctl restart custom-panel
+
+
+if ! systemctl is-active --quiet strongswan.service; then
+  echo "[!] strongSwan is not active after installation."
+  journalctl -u strongswan.service -n 100 --no-pager || true
+  exit 1
+fi
+if ! systemctl is-active --quiet custom-panel-accounting.service; then
+  echo "[!] Accounting service is not active."
+  journalctl -u custom-panel-accounting.service -n 100 --no-pager || true
+  exit 1
+fi
+if ! systemctl is-active --quiet custom-panel.service; then
+  echo "[!] Panel service is not active."
+  journalctl -u custom-panel.service -n 100 --no-pager || true
+  exit 1
+fi
 
 echo "Installed: http://$SERVER_HOST:5000"
 echo "Credentials: $APP_DIR/admin-credentials.txt"

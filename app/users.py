@@ -2,7 +2,6 @@ import datetime as dt
 import json
 from io import BytesIO
 
-import qrcode
 from flask import Blueprint, current_app, flash, redirect, render_template, request, send_file, url_for
 
 from .auth import login_required
@@ -231,14 +230,3 @@ def ike_ca(name):
     path = "/etc/swanctl/x509ca/custom-panel-ca.crt"
     return send_file(path, as_attachment=True, download_name="custom-panel-ca.crt")
 
-@users_bp.get("/users/<name>/qr")
-@login_required
-def qr(name):
-    user = get_user(name)
-    meta = protocol_meta(user["id"], "wireguard").get("wireguard")
-    item = REGISTRY["wireguard"].client(user, meta)
-    img = qrcode.make(item["content"])
-    out = BytesIO()
-    img.save(out, "PNG")
-    out.seek(0)
-    return send_file(out, mimetype="image/png", download_name=f"{name}-wireguard.png")

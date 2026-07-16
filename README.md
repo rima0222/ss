@@ -47,3 +47,23 @@ sudo systemctl status strongswan --no-pager
 sudo swanctl --list-sas
 sudo journalctl -u custom-panel-accounting -n 100 --no-pager
 ```
+
+## v2.1.1 installer fix
+
+This release removes the orphaned WireGuard systemd unit body that caused:
+
+```text
+bash: [Unit]: command not found
+```
+
+It also removes residual WireGuard/OpenVPN routes, services, Python modules and
+dependencies. The installer now verifies strongSwan, accounting and the web panel
+before printing the final Installed message.
+
+The `plugin ... failed to load` lines printed by `swanctl` are optional plugin
+warnings. The relevant success lines are:
+
+```text
+loaded connection 'custom-panel-eap'
+successfully loaded 1 connections
+```
