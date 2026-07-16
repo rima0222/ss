@@ -19,7 +19,9 @@ def init_db(path):
           protocol TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, config_json TEXT NOT NULL DEFAULT '{}',
           PRIMARY KEY(user_id,protocol));
         CREATE INDEX IF NOT EXISTS idx_users_state ON users(status,paused,expire_date);
-        """); c.commit()
+        """);
+        c.execute("DELETE FROM user_protocols WHERE protocol NOT IN ('ssh','wireguard','openvpn')")
+        c.commit()
 
 @contextmanager
 def connect():

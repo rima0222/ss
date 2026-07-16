@@ -8,7 +8,6 @@ class Config:
     WG_INTERFACE=os.getenv('CUSTOM_PANEL_WG_INTERFACE','wg0')
     WG_PORT=int(os.getenv('CUSTOM_PANEL_WG_PORT','51820'))
     OVPN_PORT=int(os.getenv('CUSTOM_PANEL_OVPN_PORT','1194'))
-    IKE_CA=os.getenv('CUSTOM_PANEL_IKE_CA','/etc/swanctl/x509ca/custom-panel-ca.crt')
     MAX_CONTENT_LENGTH=16*1024*1024
     SESSION_COOKIE_HTTPONLY=True
     SESSION_COOKIE_SAMESITE='Lax'

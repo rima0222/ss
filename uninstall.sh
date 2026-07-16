@@ -45,6 +45,12 @@ ufw --force delete allow 1194/udp >/dev/null 2>&1 || true
 ufw --force delete allow 500/udp >/dev/null 2>&1 || true
 ufw --force delete allow 4500/udp >/dev/null 2>&1 || true
 
+
+WAN_IF=$(ip route show default | awk '/default/ {print $5; exit}')
+while iptables -t nat -C POSTROUTING -s 10.67.0.0/24 -o "$WAN_IF" -j MASQUERADE 2>/dev/null; do
+  iptables -t nat -D POSTROUTING -s 10.67.0.0/24 -o "$WAN_IF" -j MASQUERADE || break
+done
+
 systemctl daemon-reload
 systemctl reset-failed 2>/dev/null || true
 

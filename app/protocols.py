@@ -1,4 +1,4 @@
-import base64,fcntl,ipaddress,json,os,pwd,re,subprocess,tempfile
+import base64,fcntl,ipaddress,json,os,pwd,re,socket,subprocess,tempfile
 from pathlib import Path
 from flask import current_app
 USER_RE=re.compile(r'^[a-z_][a-z0-9_-]{0,30}$')
@@ -103,67 +103,67 @@ PersistentKeepalive = 25
 
 class OpenVPN:
     name='openvpn'; base=Path('/etc/openvpn/server')
+    def _disconnect(self,name):
+        try:
+            with socket.create_connection(('127.0.0.1',7505),timeout=3) as sock:
+                sock.recv(4096)
+                sock.sendall(f'kill {name}\nquit\n'.encode())
+        except Exception:
+            pass
     def create(self,u):
         name=u['username']; valid_user(name); er=self.base/'easy-rsa'
         if not (er/'pki'/'issued'/f'{name}.crt').exists():
             run([str(er/'easyrsa'),'--batch','build-client-full',name,'nopass'])
+        (self.base/'clients'/f'{name}.disabled').unlink(missing_ok=True)
     def pause(self,u):
-        # Revocation is destructive; pause through CCD deny marker and disconnect.
-        p=self.base/'clients'/f"{u['username']}.disabled"; p.parent.mkdir(parents=True,exist_ok=True); p.write_text('disabled')
-        run(['pkill','-HUP','openvpn'],check=False)
-    def resume(self,u): (self.base/'clients'/f"{u['username']}.disabled").unlink(missing_ok=True)
+        p=self.base/'clients'/f"{u['username']}.disabled"
+        p.parent.mkdir(parents=True,exist_ok=True)
+        p.write_text('disabled\n')
+        self._disconnect(u['username'])
+    def resume(self,u):
+        (self.base/'clients'/f"{u['username']}.disabled").unlink(missing_ok=True)
     def delete(self,u):
-        er=self.base/'easy-rsa'; run([str(er/'easyrsa'),'--batch','revoke',u['username']],check=False); run([str(er/'easyrsa'),'gen-crl'],check=False)
+        self._disconnect(u['username'])
+        er=self.base/'easy-rsa'
+        run([str(er/'easyrsa'),'--batch','revoke',u['username']],check=False)
+        run([str(er/'easyrsa'),'gen-crl'],check=False)
+        crl=er/'pki'/'crl.pem'
+        if crl.exists():
+            (self.base/'crl.pem').write_bytes(crl.read_bytes())
+            os.chmod(self.base/'crl.pem',0o644)
+        (self.base/'clients'/f"{u['username']}.disabled").unlink(missing_ok=True)
     def update(self,u): return None
     def client(self,u):
         n=u['username']; er=self.base/'easy-rsa'; host=current_app.config['SERVER_HOST']; port=current_app.config['OVPN_PORT']
-        def read(p): return Path(p).read_text().strip()
+        def read(path): return Path(path).read_text().strip()
         c=f"""client
-dev tun
-proto udp
-remote {host} {port}
-resolv-retry infinite
-nobind
-persist-key
-persist-tun
-remote-cert-tls server
-auth SHA256
-cipher AES-256-GCM
-verb 3
-<ca>
-{read(self.base/'ca.crt')}
-</ca>
-<cert>
-{read(er/'pki'/'issued'/f'{n}.crt')}
-</cert>
-<key>
-{read(er/'pki'/'private'/f'{n}.key')}
-</key>
-<tls-crypt>
-{read(self.base/'tls-crypt.key')}
-</tls-crypt>
-"""
+ dev tun
+ proto udp
+ remote {host} {port}
+ resolv-retry infinite
+ nobind
+ persist-key
+ persist-tun
+ remote-cert-tls server
+ auth SHA256
+ cipher AES-256-GCM
+ data-ciphers AES-256-GCM:CHACHA20-POLY1305
+ auth-nocache
+ verb 3
+ <ca>
+ {read(self.base/'ca.crt')}
+ </ca>
+ <cert>
+ {read(er/'pki'/'issued'/f'{n}.crt')}
+ </cert>
+ <key>
+ {read(er/'pki'/'private'/f'{n}.key')}
+ </key>
+ <tls-crypt>
+ {read(self.base/'tls-crypt.key')}
+ </tls-crypt>
+ """
+        c='\n'.join(line[1:] if line.startswith(' ') else line for line in c.splitlines())+'\n'
         return {'type':'text','filename':f'{n}.ovpn','content':c}
 
-class IKEv2:
-    name='ikev2'; path=Path('/etc/swanctl/conf.d/custom-panel-users.conf')
-    def _all(self):
-        p=Path('/etc/custom-panel/data/ike-users.json')
-        try:return json.loads(p.read_text())
-        except Exception:return {}
-    def _save(self,d):
-        p=Path('/etc/custom-panel/data/ike-users.json'); p.write_text(json.dumps(d,indent=2)); os.chmod(p,0o600)
-        lines=['secrets {']
-        for n,pw in d.items(): lines += [f'  eap-{n} {{',f'    id = {n}',f'    secret = "{pw.replace(chr(34), "")}"','  }']
-        lines += ['}']; self.path.write_text('\n'.join(lines)+'\n'); run(['swanctl','--load-creds'],check=False)
-    def create(self,u): d=self._all(); d[u['username']]=u['password']; self._save(d)
-    update=create
-    def pause(self,u): d=self._all(); d.pop(u['username'],None); self._save(d); run(['swanctl','--terminate','--ike',u['username']],check=False)
-    def resume(self,u): self.create(u)
-    def delete(self,u): self.pause(u)
-    def client(self,u):
-        ca=Path(current_app.config['IKE_CA']).read_text()
-        c=f"Server: {current_app.config['SERVER_HOST']}\nVPN type: IKEv2\nUsername: {u['username']}\nPassword: {u['password']}\nInstall the CA certificate if your OS does not already trust it.\n"
-        return {'type':'bundle','filename':f"{u['username']}-ikev2.txt",'content':c,'ca':ca}
-
-REGISTRY={'ssh':SSH(),'wireguard':WireGuard(),'openvpn':OpenVPN(),'ikev2':IKEv2()}
+REGISTRY={'ssh':SSH(),'wireguard':WireGuard(),'openvpn':OpenVPN()}

@@ -1,5 +1,4 @@
 import json
-import re
 import subprocess
 import time
 from pathlib import Path
@@ -92,22 +91,11 @@ def openvpn_stats():
     return result
 
 
-def ikev2_online():
-    out = _run(['swanctl', '--list-sas'])
-    # EAP identities and IKE names are both commonly visible in this output.
-    found = set()
-    for line in out.splitlines():
-        m = re.search(r"(?:remote EAP identity|remote-id|EAP identity)[:=]\s*'?([^'\s,]+)", line, re.I)
-        if m:
-            found.add(m.group(1))
-    return found, out
-
 
 def collect_live(users, wg_interface='wg0'):
     ssh = ssh_online()
     wg = wireguard_stats(wg_interface)
     ovpn = openvpn_stats()
-    ike_users, ike_raw = ikev2_online()
     result = {}
     for u in users:
         name = u['username']
@@ -122,8 +110,6 @@ def collect_live(users, wg_interface='wg0'):
                 stat = wg.get(name, {'online': False, 'rx_bytes': 0, 'tx_bytes': 0, 'last_handshake': 0})
             elif protocol == 'openvpn':
                 stat = ovpn.get(name, {'online': False, 'rx_bytes': 0, 'tx_bytes': 0})
-            elif protocol == 'ikev2':
-                stat = {'online': name in ike_users or name in ike_raw, 'rx_bytes': 0, 'tx_bytes': 0}
             else:
                 stat = {'online': False, 'rx_bytes': 0, 'tx_bytes': 0}
             any_online = any_online or stat['online']
