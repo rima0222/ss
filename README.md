@@ -1,11 +1,17 @@
-# Custom Panel v15 Smart Engine
+# Custom Panel v16 System Manager
 
-New architecture foundation:
-- Smart cleanup installer
-- Separate agent architecture
-- Session accounting module
+Architecture:
+- Clean installer
+- Smart cleanup
+- Admin credential generator
+- Separate agent layer
+- Session monitoring module
 - Traffic accounting module
-- Admin management module
-- Database separation
+- SQLite database
+- Systemd services
 
-This package is the v15 base structure.
+Install:
+curl -fsSL https://raw.githubusercontent.com/rima0222/ss/main/install.sh | sudo bash
+
+Credentials:
+sudo bash /etc/custom-panel/show-credentials.sh

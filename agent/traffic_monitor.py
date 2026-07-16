@@ -1,2 +1,2 @@
-# v15 traffic engine
-# nftables accounting integration module
+# nftables traffic accounting module
+# RX/TX counters per managed user

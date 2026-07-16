@@ -1,2 +1,2 @@
-# v15 session monitor
-# PAM/session integration module
+# PAM session monitor module
+# Will register login/logout events

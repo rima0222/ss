@@ -1,31 +1,24 @@
 CREATE TABLE users(
- id INTEGER PRIMARY KEY,
- username TEXT UNIQUE,
- password_hash TEXT,
- quota_bytes INTEGER DEFAULT 0,
- remaining_days INTEGER DEFAULT 0,
- paused INTEGER DEFAULT 0
+id INTEGER PRIMARY KEY,
+username TEXT UNIQUE,
+password_hash TEXT,
+quota INTEGER DEFAULT 0,
+traffic INTEGER DEFAULT 0,
+expire_days INTEGER DEFAULT 0,
+paused INTEGER DEFAULT 0
 );
 
 CREATE TABLE sessions(
- id INTEGER PRIMARY KEY,
- user_id INTEGER,
- ip TEXT,
- started_at INTEGER,
- last_seen INTEGER,
- online INTEGER DEFAULT 1
+id INTEGER PRIMARY KEY,
+username TEXT,
+ip TEXT,
+online INTEGER DEFAULT 1,
+last_seen INTEGER
 );
 
 CREATE TABLE traffic(
- id INTEGER PRIMARY KEY,
- user_id INTEGER,
- rx_bytes INTEGER DEFAULT 0,
- tx_bytes INTEGER DEFAULT 0,
- created_at INTEGER
-);
-
-CREATE TABLE admin(
- id INTEGER PRIMARY KEY,
- username TEXT,
- password_hash TEXT
+id INTEGER PRIMARY KEY,
+username TEXT,
+rx INTEGER DEFAULT 0,
+tx INTEGER DEFAULT 0
 );

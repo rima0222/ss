@@ -1,395 +1,71 @@
-#!/usr/bin/env bash
-set -Eeuo pipefail
+#!/bin/bash
+set -e
 
-APP=/etc/custom-panel
-REPO="${CUSTOM_PANEL_REPO_URL:-https://github.com/rima0222/ss.git}"
-CLEAN="${CUSTOM_PANEL_CLEAN_INSTALL:-1}"
+APP=/opt/custom-panel
+STATE=/var/lib/custom-panel
 
-[[ "$EUID" -eq 0 ]] || { echo "Run as root."; exit 1; }
+echo "[*] Custom Panel v16 installation"
 
-backup_old(){
-  [[ -d "$APP" ]] || return 0
-  stamp="$(date -u +%Y%m%d-%H%M%S)"
-  rescue="/root/custom-panel-rescue-$stamp"
-  mkdir -p "$rescue"
-  for item in data backups .env admin-credentials.txt; do
-    [[ -e "$APP/$item" ]] && cp -a "$APP/$item" "$rescue/"
-  done
-  tar -C /root -czf "$rescue.tar.gz" "$(basename "$rescue")" 2>/dev/null || true
-}
+systemctl stop custom-panel.service 2>/dev/null || true
+systemctl stop custom-panel-agent.service 2>/dev/null || true
 
-if [[ "$CLEAN" == "1" ]]; then
-  systemctl disable --now custom-panel custom-panel-proxy custom-panel-accounting custom-panel-helper custom-panel-sshd 2>/dev/null || true
-  echo "[*] Clean installation: removing previous panel data and configuration"
-  rm -f /etc/systemd/system/custom-panel.service
-  rm -f /etc/systemd/system/custom-panel-proxy.service
-  rm -f /etc/systemd/system/custom-panel-accounting.service
-  rm -f /etc/systemd/system/custom-panel-helper.service
-  rm -f /etc/systemd/system/custom-panel-sshd.service
-  rm -rf "$APP" /run/custom-panel
-  rm -f /etc/tmpfiles.d/custom-panel.conf
-  systemctl daemon-reload
-fi
+systemctl disable custom-panel.service 2>/dev/null || true
+systemctl disable custom-panel-agent.service 2>/dev/null || true
 
-if ! pgrep -x useradd >/dev/null 2>&1 &&
-   ! pgrep -x usermod >/dev/null 2>&1 &&
-   ! pgrep -x userdel >/dev/null 2>&1 &&
-   ! pgrep -x chpasswd >/dev/null 2>&1; then
-  rm -f /etc/passwd.lock /etc/shadow.lock /etc/group.lock /etc/gshadow.lock
-fi
+rm -f /etc/systemd/system/custom-panel*.service
+systemctl daemon-reload
 
-export DEBIAN_FRONTEND=noninteractive
-apt-get update -y
-apt-get install -y python3 python3-venv git curl ca-certificates openssh-server sqlite3 ufw util-linux
+rm -rf $STATE
+rm -rf /run/custom-panel
 
-getent group panelusers >/dev/null || groupadd --system panelusers
-getent group custompanel >/dev/null || groupadd --system custompanel
-id -u custompanel >/dev/null 2>&1 || useradd --system --no-create-home --gid custompanel --shell /usr/sbin/nologin custompanel
-usermod -g custompanel custompanel
+mkdir -p $APP
+mkdir -p /etc/custom-panel
 
-cat > /usr/local/bin/panel-hold <<'EOF'
-#!/usr/bin/env bash
-trap 'exit 0' TERM INT HUP
-while true; do sleep 3600; done
-EOF
-chmod 755 /usr/local/bin/panel-hold
-grep -qxF '/usr/local/bin/panel-hold' /etc/shells || echo '/usr/local/bin/panel-hold' >> /etc/shells
+apt update -y
+apt install -y python3 python3-venv python3-pip sqlite3 openssh-server nftables
 
-# Keep the normal SSH daemon on port 22 for server administration.
-rm -f /etc/ssh/sshd_config.d/99-custom-panel.conf
-sshd -t
-systemctl enable --now ssh
-systemctl restart ssh
+python3 -m venv $APP/venv
 
-# Managed users use a separate OpenSSH instance bound only to localhost.
-cat > /etc/ssh/sshd_config_custom_panel <<'EOF'
-Port 2222
-ListenAddress 127.0.0.1
-Protocol 2
-HostKey /etc/ssh/ssh_host_ed25519_key
-HostKey /etc/ssh/ssh_host_rsa_key
-UsePAM yes
-PasswordAuthentication yes
-KbdInteractiveAuthentication no
-PermitRootLogin no
-AllowGroups panelusers
-PermitEmptyPasswords no
-X11Forwarding no
-AllowAgentForwarding no
-AllowTcpForwarding yes
-GatewayPorts no
-PermitTunnel no
-PrintMotd no
-PidFile /run/sshd-custom-panel.pid
-Subsystem sftp internal-sftp
+PASS=$(openssl rand -base64 32 | tr -d '/+=')
 
-Match Group panelusers
-    ForceCommand /usr/local/bin/panel-hold
-    PermitTTY no
-EOF
-
-/usr/sbin/sshd -t -f /etc/ssh/sshd_config_custom_panel
-
-cat > /etc/systemd/system/custom-panel-sshd.service <<'EOF'
-[Unit]
-Description=Custom Panel internal OpenSSH
-After=network.target
-Before=custom-panel-proxy.service
-
-[Service]
-Type=notify
-ExecStart=/usr/sbin/sshd -D -f /etc/ssh/sshd_config_custom_panel
-ExecReload=/bin/kill -HUP $MAINPID
-KillMode=process
-Restart=on-failure
-RestartSec=2
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-git clone --depth=1 "$REPO" "$APP"
-test -f "$APP/app/__init__.py"
-test -f "$APP/requirements.txt"
-test -f "$APP/templates/index.html"
-
-python3 -m venv "$APP/venv"
-"$APP/venv/bin/pip" install --upgrade pip
-"$APP/venv/bin/pip" install -r "$APP/requirements.txt"
-
-mkdir -p "$APP/data" "$APP/backups" "$APP/runtime" /run/custom-panel
-chown -R root:custompanel "$APP"
-find "$APP" -type d -exec chmod 750 {} +
-find "$APP" -type f -exec chmod 640 {} +
-find "$APP/venv/bin" -type f -exec chmod 750 {} +
-chmod 750 "$APP/install.sh" "$APP/show-credentials.sh" "$APP/reset-admin-password.sh" "$APP/diagnose.sh"
-chown -R custompanel:custompanel "$APP/data" "$APP/backups" "$APP/runtime"
-chmod 770 "$APP/data" "$APP/backups" "$APP/runtime"
-chown root:custompanel /run/custom-panel
-chmod 770 /run/custom-panel
-
-SERVER_HOST="${CUSTOM_PANEL_SERVER_HOST:-$(curl -4fsS --max-time 10 https://api.ipify.org || hostname -I | awk '{print $1}')}"
-[[ -n "$SERVER_HOST" ]] || { echo "Could not detect server IP."; exit 1; }
-
-ADMIN_PASSWORD="$(python3 - <<'PY'
-import secrets
-print(secrets.token_urlsafe(18))
-PY
-)"
-SECRET="$(python3 - <<'PY'
-import secrets
-print(secrets.token_hex(32))
-PY
-)"
-DATA_KEY="$("$APP/venv/bin/python" - <<'PY'
-from cryptography.fernet import Fernet
-print(Fernet.generate_key().decode())
-PY
-)"
-ADMIN_HASH="$("$APP/venv/bin/python" - <<PY
-from werkzeug.security import generate_password_hash
-print(generate_password_hash("""$ADMIN_PASSWORD"""))
-PY
-)"
-
-cat > "$APP/.env" <<EOF
-CUSTOM_PANEL_SECRET_KEY=$SECRET
-CUSTOM_PANEL_ADMIN_USERNAME=admin
-CUSTOM_PANEL_ADMIN_PASSWORD_HASH=$ADMIN_HASH
-CUSTOM_PANEL_DATA_KEY=$DATA_KEY
-CUSTOM_PANEL_DB=$APP/data/panel.db
-CUSTOM_PANEL_SERVER_HOST=$SERVER_HOST
-CUSTOM_PANEL_INTERNAL_SSH_PORT=2222
-CUSTOM_PANEL_TCP_PORT_START=20000
-CUSTOM_PANEL_TCP_PORT_END=24999
-CUSTOM_PANEL_WS_PORT_START=25000
-CUSTOM_PANEL_WS_PORT_END=29999
-CUSTOM_PANEL_HELPER_SOCKET=/run/custom-panel/helper.sock
-CUSTOM_PANEL_LIVE_PATH=/run/custom-panel/live.json
-CUSTOM_PANEL_EVENT_SOCKET=/run/custom-panel/events.sock
-EOF
-cat > "$APP/admin-credentials.txt" <<EOF
+cat >/etc/custom-panel/admin-credentials.txt <<EOF
 Username: admin
-Password: $ADMIN_PASSWORD
+Password: $PASS
 EOF
-chown root:custompanel "$APP/.env"
-chmod 640 "$APP/.env"
-chmod 600 "$APP/admin-credentials.txt"
 
-cat > /etc/tmpfiles.d/custom-panel.conf <<'EOF'
-d /run/custom-panel 0770 root custompanel -
-EOF
-systemd-tmpfiles --create /etc/tmpfiles.d/custom-panel.conf
+chmod 600 /etc/custom-panel/admin-credentials.txt
 
-cat > /etc/systemd/system/custom-panel-helper.service <<EOF
+cat >/etc/systemd/system/custom-panel.service <<EOF
 [Unit]
-Description=Custom Panel account helper
-After=local-fs.target
+Description=Custom Panel v16
 
 [Service]
-Type=simple
-User=root
-Group=root
 WorkingDirectory=$APP
-EnvironmentFile=$APP/.env
-Environment=PYTHONPATH=$APP
-ExecStart=$APP/venv/bin/python -m app.account_helper
-Restart=on-failure
-RestartSec=2
-PrivateTmp=true
-LimitNOFILE=1024
+ExecStart=$APP/venv/bin/python3 $APP/panel/app.py
+Restart=always
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-cat > /etc/systemd/system/custom-panel-proxy.service <<EOF
+cat >/etc/systemd/system/custom-panel-agent.service <<EOF
 [Unit]
-Description=OpenSSH and SSH WebSocket proxy
-After=network-online.target ssh.service
-Wants=network-online.target
+Description=Custom Panel v16 Agent
 
 [Service]
-Type=simple
-User=custompanel
-Group=custompanel
 WorkingDirectory=$APP
-EnvironmentFile=$APP/.env
-Environment=PYTHONPATH=$APP
-ExecStart=$APP/venv/bin/python -m app.proxy_runtime
-Restart=on-failure
-RestartSec=2
-PrivateTmp=true
-NoNewPrivileges=true
-UMask=0007
-LimitNOFILE=65535
-Nice=5
+ExecStart=$APP/venv/bin/python3 $APP/agent/main.py
+Restart=always
 
 [Install]
 WantedBy=multi-user.target
 EOF
-
-cat > /etc/systemd/system/custom-panel-accounting.service <<EOF
-[Unit]
-Description=Custom Panel accounting
-After=custom-panel-helper.service custom-panel-proxy.service
-Requires=custom-panel-helper.service
-
-[Service]
-Type=simple
-User=custompanel
-Group=custompanel
-WorkingDirectory=$APP
-EnvironmentFile=$APP/.env
-Environment=PYTHONPATH=$APP
-ExecStart=$APP/venv/bin/python -m app.accounting_worker
-Restart=on-failure
-RestartSec=3
-PrivateTmp=true
-NoNewPrivileges=true
-UMask=0007
-Nice=10
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-cat > /etc/systemd/system/custom-panel.service <<EOF
-[Unit]
-Description=Custom Panel web
-After=network-online.target custom-panel-helper.service custom-panel-proxy.service
-Requires=custom-panel-helper.service
-
-[Service]
-Type=simple
-User=custompanel
-Group=custompanel
-WorkingDirectory=$APP
-EnvironmentFile=$APP/.env
-Environment=PYTHONPATH=$APP
-ExecStart=$APP/venv/bin/gunicorn --workers 1 --threads 4 --timeout 30 --keep-alive 3 --max-requests 3000 --max-requests-jitter 300 --bind 0.0.0.0:5000 "app:create_app()"
-Restart=on-failure
-RestartSec=3
-PrivateTmp=true
-NoNewPrivileges=true
-UMask=0007
-LimitNOFILE=8192
-Nice=5
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-runuser -u custompanel -- test -x "$APP"
-runuser -u custompanel -- test -r "$APP/app/proxy_runtime.py"
-runuser -u custompanel -- test -r "$APP/app/__init__.py"
-runuser -u custompanel -- test -w "$APP/data"
-
-# Create and verify the SQLite database using the same user that runs all
-# database-writing services. This prevents readonly database errors.
-runuser -u custompanel -- env \
-  PYTHONPATH="$APP" \
-  CUSTOM_PANEL_SECRET_KEY="$SECRET" \
-  CUSTOM_PANEL_ADMIN_USERNAME="admin" \
-  CUSTOM_PANEL_ADMIN_PASSWORD_HASH="$ADMIN_HASH" \
-  CUSTOM_PANEL_DATA_KEY="$DATA_KEY" \
-  CUSTOM_PANEL_DB="$APP/data/panel.db" \
-  CUSTOM_PANEL_SERVER_HOST="$SERVER_HOST" \
-  CUSTOM_PANEL_INTERNAL_SSH_PORT="2222" \
-  CUSTOM_PANEL_TCP_PORT_START="20000" \
-  CUSTOM_PANEL_TCP_PORT_END="24999" \
-  CUSTOM_PANEL_WS_PORT_START="25000" \
-  CUSTOM_PANEL_WS_PORT_END="29999" \
-  CUSTOM_PANEL_HELPER_SOCKET="/run/custom-panel/helper.sock" \
-  CUSTOM_PANEL_LIVE_PATH="/run/custom-panel/live.json" \
-  CUSTOM_PANEL_EVENT_SOCKET="/run/custom-panel/events.sock" \
-  "$APP/venv/bin/python" - <<'PY'
-from app.db import init_db, connect
-from app.config import Config
-init_db(Config.DB_PATH)
-with connect() as conn:
-    conn.execute("CREATE TABLE IF NOT EXISTS install_write_test(id INTEGER PRIMARY KEY, value TEXT)")
-    conn.execute("INSERT OR REPLACE INTO install_write_test(id,value) VALUES(1,'ok')")
-    conn.commit()
-    assert conn.execute("SELECT value FROM install_write_test WHERE id=1").fetchone()[0] == "ok"
-    conn.execute("DROP TABLE install_write_test")
-    conn.commit()
-print("SQLite write test: OK")
-PY
-
-chown -R custompanel:custompanel "$APP/data"
-find "$APP/data" -type d -exec chmod 770 {} +
-find "$APP/data" -type f -exec chmod 660 {} +
-
-ufw allow OpenSSH >/dev/null 2>&1 || true
-ufw allow 5000/tcp >/dev/null 2>&1 || true
-ufw allow 20000:29999/tcp >/dev/null 2>&1 || true
-ufw --force enable >/dev/null 2>&1 || true
 
 systemctl daemon-reload
-systemctl reset-failed custom-panel-helper custom-panel-proxy custom-panel-accounting custom-panel 2>/dev/null || true
-systemctl enable custom-panel-sshd custom-panel-helper custom-panel-proxy custom-panel-accounting custom-panel >/dev/null
+systemctl enable custom-panel custom-panel-agent
+systemctl start custom-panel custom-panel-agent || true
 
-systemctl start custom-panel-sshd
-sleep 1
-systemctl start custom-panel-helper
-sleep 1
-systemctl start custom-panel-proxy
-sleep 2
-ss -lnt | grep -q "127.0.0.1:2222" || {
-  journalctl -u custom-panel-sshd -n 120 --no-pager || true
-  echo "Internal OpenSSH is not listening on localhost:2222."
-  exit 1
-}
-test -f /run/custom-panel/live.json || {
-  journalctl -u custom-panel-proxy -n 120 --no-pager || true
-  echo "Live accounting snapshot was not created."
-  exit 1
-}
-systemctl start custom-panel-accounting
-systemctl start custom-panel
-sleep 3
-
-for service in ssh custom-panel-sshd custom-panel-helper custom-panel-proxy custom-panel-accounting custom-panel; do
-  if ! systemctl is-active --quiet "$service"; then
-    journalctl -u "$service" -n 120 --no-pager || true
-    echo "Service failed: $service"
-    exit 1
-  fi
-done
-
-curl -fsS --max-time 10 http://127.0.0.1:5000/login >/dev/null
-
-python3 - <<'PY'
-import json, time
-path="/run/custom-panel/live.json"
-data=json.load(open(path))
-age=int(time.time())-int(data.get("updated_at",0))
-if age > 3:
-    raise SystemExit(f"Gateway snapshot is stale: {age}s")
-print("Gateway snapshot: OK")
-PY
-
-runuser -u custompanel -- sqlite3 "$APP/data/panel.db"   "CREATE TABLE IF NOT EXISTS final_write_test(id INTEGER PRIMARY KEY); INSERT OR REPLACE INTO final_write_test(id) VALUES(1); DROP TABLE final_write_test;"
-
-runuser -u custompanel -- env PYTHONPATH="$APP" \
-  CUSTOM_PANEL_SECRET_KEY="$SECRET" \
-  CUSTOM_PANEL_ADMIN_USERNAME="admin" \
-  CUSTOM_PANEL_ADMIN_PASSWORD_HASH="$ADMIN_HASH" \
-  CUSTOM_PANEL_DATA_KEY="$DATA_KEY" \
-  CUSTOM_PANEL_DB="$APP/data/panel.db" \
-  CUSTOM_PANEL_SERVER_HOST="$SERVER_HOST" \
-  CUSTOM_PANEL_INTERNAL_SSH_PORT="2222" \
-  CUSTOM_PANEL_TCP_PORT_START="20000" \
-  CUSTOM_PANEL_TCP_PORT_END="24999" \
-  CUSTOM_PANEL_WS_PORT_START="25000" \
-  CUSTOM_PANEL_WS_PORT_END="29999" \
-  CUSTOM_PANEL_HELPER_SOCKET="/run/custom-panel/helper.sock" \
-  CUSTOM_PANEL_LIVE_PATH="/run/custom-panel/live.json" \
-  CUSTOM_PANEL_EVENT_SOCKET="/run/custom-panel/events.sock" \
-  "$APP/venv/bin/python" -c "from app.db import init_db,connect; from app.config import Config; init_db(Config.DB_PATH); c=connect().__enter__(); c.execute('PRAGMA wal_checkpoint(PASSIVE)'); c.close()"
-ss -lnt | grep -qE '[:.]5000[[:space:]]'
-
-echo "Installed: http://$SERVER_HOST:5000"
-echo "Credentials: $APP/admin-credentials.txt"
-echo "Show credentials: sudo bash $APP/show-credentials.sh"
+echo "================================"
+echo "Custom Panel v16 Installed"
+cat /etc/custom-panel/admin-credentials.txt
+echo "================================"
