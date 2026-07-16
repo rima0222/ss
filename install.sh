@@ -39,7 +39,7 @@ getent group custompanel >/dev/null || groupadd --system custompanel
 id -u custompanel >/dev/null 2>&1 || useradd --system --no-create-home --gid custompanel --shell /usr/sbin/nologin custompanel
 id -u panelproxy >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin panelproxy
 usermod -g custompanel custompanel
-usermod -a -G custompanel panelproxy
+usermod -g custompanel panelproxy
 
 cat > /usr/local/bin/panel-hold <<'EOF'
 #!/usr/bin/env bash
@@ -77,14 +77,14 @@ python3 -m venv "$APP/venv"
 
 mkdir -p "$APP/data" "$APP/backups" "$APP/runtime" /run/custom-panel
 
-# The application code remains root-owned and read-only to service users.
+# Application code is root-owned but readable/traversable by custompanel group.
 chown -R root:custompanel "$APP"
-chmod 750 "$APP"
-find "$APP/app" "$APP/templates" "$APP/static" "$APP/venv" -type d -exec chmod 750 {} +
-find "$APP/app" "$APP/templates" "$APP/static" -type f -exec chmod 640 {} +
+find "$APP" -type d -exec chmod 750 {} +
+find "$APP" -type f -exec chmod 640 {} +
 find "$APP/venv/bin" -type f -exec chmod 750 {} +
+chmod 750 "$APP/install.sh" "$APP/show-credentials.sh" "$APP/reset-admin-password.sh" 2>/dev/null || true
 
-# Database/runtime directories are writable by the custompanel group.
+# Only runtime data is writable by panel services.
 chown -R custompanel:custompanel "$APP/data" "$APP/backups" "$APP/runtime"
 chmod 770 "$APP/data" "$APP/backups" "$APP/runtime"
 
@@ -138,7 +138,10 @@ chmod 600 "$APP/admin-credentials.txt"
 cat > /etc/systemd/system/custom-panel-helper.service <<EOF
 [Unit]
 Description=Custom Panel privileged account helper
-After=network.target
+After=local-fs.target
+Before=custom-panel.service custom-panel-accounting.service
+StartLimitIntervalSec=60
+StartLimitBurst=10
 
 [Service]
 Type=simple
@@ -147,13 +150,11 @@ Group=root
 WorkingDirectory=$APP
 EnvironmentFile=$APP/.env
 ExecStart=$APP/venv/bin/python -m app.account_helper
-Restart=always
+Restart=on-failure
 RestartSec=2
-NoNewPrivileges=false
 PrivateTmp=true
-ProtectSystem=full
-ReadWritePaths=/etc/passwd /etc/shadow /etc/group /etc/gshadow /run /var/run
-RestrictAddressFamilies=AF_UNIX
+NoNewPrivileges=false
+LimitNOFILE=1024
 
 [Install]
 WantedBy=multi-user.target
@@ -161,29 +162,25 @@ EOF
 
 cat > /etc/systemd/system/custom-panel-proxy.service <<EOF
 [Unit]
-Description=Custom Panel async SSH proxy
+Description=Custom Panel async OpenSSH proxy
 After=network-online.target ssh.service
 Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=10
 
 [Service]
 Type=simple
 User=panelproxy
-Group=panelproxy
-SupplementaryGroups=custompanel
+Group=custompanel
 WorkingDirectory=$APP
 EnvironmentFile=$APP/.env
 ExecStart=$APP/venv/bin/python -m app.proxy_runtime
-Restart=always
+Restart=on-failure
 RestartSec=2
+PrivateTmp=true
+NoNewPrivileges=true
 LimitNOFILE=65535
 Nice=5
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=true
-ReadOnlyPaths=$APP
-ReadWritePaths=$APP/data /run/custom-panel
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 
 [Install]
 WantedBy=multi-user.target
@@ -193,6 +190,9 @@ cat > /etc/systemd/system/custom-panel-accounting.service <<EOF
 [Unit]
 Description=Custom Panel accounting and quota enforcement
 After=custom-panel-helper.service custom-panel-proxy.service
+Requires=custom-panel-helper.service
+StartLimitIntervalSec=60
+StartLimitBurst=10
 
 [Service]
 Type=simple
@@ -201,16 +201,12 @@ Group=custompanel
 WorkingDirectory=$APP
 EnvironmentFile=$APP/.env
 ExecStart=$APP/venv/bin/python -m app.accounting_worker
-Restart=always
+Restart=on-failure
 RestartSec=3
-Nice=10
-NoNewPrivileges=true
 PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=true
-ReadOnlyPaths=$APP
-ReadWritePaths=$APP/data /run/custom-panel/custom-panel
-RestrictAddressFamilies=AF_UNIX
+NoNewPrivileges=true
+LimitNOFILE=2048
+Nice=10
 
 [Install]
 WantedBy=multi-user.target
@@ -220,6 +216,9 @@ cat > /etc/systemd/system/custom-panel.service <<EOF
 [Unit]
 Description=Custom Panel web application
 After=network-online.target custom-panel-helper.service custom-panel-proxy.service
+Requires=custom-panel-helper.service
+StartLimitIntervalSec=60
+StartLimitBurst=10
 
 [Service]
 Type=simple
@@ -228,15 +227,10 @@ Group=custompanel
 WorkingDirectory=$APP
 EnvironmentFile=$APP/.env
 ExecStart=$APP/venv/bin/gunicorn --workers 1 --threads 4 --timeout 30 --keep-alive 3 --max-requests 3000 --max-requests-jitter 300 --bind 0.0.0.0:5000 "app:create_app()"
-Restart=always
+Restart=on-failure
 RestartSec=3
-NoNewPrivileges=true
 PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=true
-ReadOnlyPaths=$APP
-ReadWritePaths=$APP/data $APP/backups $APP/runtime /run/custom-panel
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+NoNewPrivileges=true
 LimitNOFILE=8192
 Nice=5
 
@@ -249,7 +243,8 @@ ufw allow 5000/tcp >/dev/null 2>&1 || true
 ufw allow 20000:29999/tcp >/dev/null 2>&1 || true
 ufw --force enable >/dev/null 2>&1 || true
 
-# Verify service users can enter the application directory before startup.
+# Permission and import preflight tests.
+namei -l "$APP" || true
 sudo -u panelproxy test -x "$APP"
 sudo -u custompanel test -x "$APP"
 sudo -u panelproxy test -r "$APP/app/proxy_runtime.py"
@@ -257,9 +252,25 @@ sudo -u custompanel test -r "$APP/app/__init__.py"
 sudo -u panelproxy test -w "$APP/data"
 sudo -u custompanel test -w "$APP/data"
 
+sudo -u panelproxy env $(cat "$APP/.env" | xargs) \
+  "$APP/venv/bin/python" -c "from app.db import init_db; init_db('$APP/data/panel.db')"
+sudo -u custompanel env $(cat "$APP/.env" | xargs) \
+  "$APP/venv/bin/python" -c "from app import create_app; create_app()"
+
+cat > /etc/tmpfiles.d/custom-panel.conf <<'EOF'
+d /run/custom-panel 0770 root custompanel -
+EOF
+systemd-tmpfiles --create /etc/tmpfiles.d/custom-panel.conf
+
 systemctl daemon-reload
+systemctl reset-failed custom-panel-helper custom-panel-proxy custom-panel-accounting custom-panel 2>/dev/null || true
 systemctl enable custom-panel-helper custom-panel-proxy custom-panel-accounting custom-panel >/dev/null
-systemctl restart custom-panel-helper custom-panel-proxy custom-panel-accounting custom-panel
+systemctl stop custom-panel-helper custom-panel-proxy custom-panel-accounting custom-panel 2>/dev/null || true
+systemctl start custom-panel-helper
+sleep 1
+systemctl start custom-panel-proxy
+systemctl start custom-panel-accounting
+systemctl start custom-panel
 sleep 3
 
 for service in ssh custom-panel-helper custom-panel-proxy custom-panel-accounting custom-panel; do
