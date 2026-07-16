@@ -5,12 +5,10 @@ legacy-compatible backup/restore, server statistics, SSH, WireGuard, OpenVPN and
 
 ## Install
 
-1. Push this folder to a public GitHub repository.
-2. Replace `YOUR_GITHUB_USERNAME` in `install.sh`.
-3. Run:
+Install on Ubuntu 24.04 with one command:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/custom-panel/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/rima0222/ss/main/install.sh | sudo bash
 ```
 
 Credentials are written to:

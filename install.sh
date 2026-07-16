@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 APP_DIR=/etc/custom-panel
-REPO_URL="${CUSTOM_PANEL_REPO_URL:-https://github.com/YOUR_GITHUB_USERNAME/custom-panel.git}"
+REPO_URL="${CUSTOM_PANEL_REPO_URL:-https://github.com/rima0222/ss.git}"
 SERVER_HOST="${PANEL_SERVER_HOST:-$(curl -4fsS --max-time 10 https://api.ipify.org || hostname -I | awk '{print $1}')}"
 
 [[ $EUID -eq 0 ]] || { echo 'Run with sudo.'; exit 1; }
@@ -9,7 +9,7 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 apt-get install -y python3 python3-venv git curl ca-certificates openssh-server sqlite3 \
   wireguard-tools openvpn easy-rsa strongswan-swanctl strongswan-pki libcharon-extra-plugins \
-  qrencode ufw iptables-persistent
+  qrencode ufw
 
 systemctl enable --now ssh
 
