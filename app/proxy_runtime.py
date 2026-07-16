@@ -1,7 +1,11 @@
 import asyncio
+import json
+import os
 import signal
+import sqlite3
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 import websockets
 
@@ -11,6 +15,7 @@ from .db import connect, init_db
 @dataclass(frozen=True)
 class Endpoint:
     user_id: int
+    username: str
     kind: str
     port: int
     token: str | None = None
@@ -18,37 +23,56 @@ class Endpoint:
 class Runtime:
     def __init__(self):
         self.lock = asyncio.Lock()
-        self.counters = {}
+        self.state = {}
         self.tcp_servers = {}
         self.ws_servers = {}
         self.stop = asyncio.Event()
+        self.live_path = Path(Config.LIVE_PATH)
 
     def desired(self):
         with connect() as conn:
             users = [dict(row) for row in conn.execute("""
-            SELECT * FROM users
+            SELECT id,username,tcp_enabled,ws_enabled,tcp_port,ws_port,ws_token
+            FROM users
             WHERE paused=0 AND status='Active' AND remaining_days>0
             """)]
-        tcp = {}
-        ws = {}
+
+        tcp, ws = {}, {}
         for user in users:
             if user["tcp_enabled"] and user["tcp_port"]:
-                tcp[int(user["tcp_port"])] = Endpoint(user["id"], "tcp", int(user["tcp_port"]))
+                tcp[int(user["tcp_port"])] = Endpoint(
+                    int(user["id"]), user["username"], "tcp", int(user["tcp_port"])
+                )
             if user["ws_enabled"] and user["ws_port"]:
                 ws[int(user["ws_port"])] = Endpoint(
-                    user["id"], "ws", int(user["ws_port"]), user["ws_token"]
+                    int(user["id"]), user["username"], "ws",
+                    int(user["ws_port"]), user["ws_token"]
                 )
         return tcp, ws
 
-    async def change(self, uid, kind, rx=0, tx=0, online_delta=0):
+    async def change(self, endpoint, rx=0, tx=0, online_delta=0):
         async with self.lock:
-            key = (uid, kind)
-            item = self.counters.setdefault(key, {"rx": 0, "tx": 0, "online": 0})
-            item["rx"] += rx
-            item["tx"] += tx
+            key = (endpoint.user_id, endpoint.kind)
+            item = self.state.setdefault(key, {
+                "user_id": endpoint.user_id,
+                "username": endpoint.username,
+                "kind": endpoint.kind,
+                "rx_pending": 0,
+                "tx_pending": 0,
+                "rx_live": 0,
+                "tx_live": 0,
+                "online": 0,
+                "last_seen": 0,
+            })
+            item["rx_pending"] += rx
+            item["tx_pending"] += tx
+            item["rx_live"] += rx
+            item["tx_live"] += tx
             item["online"] = max(0, item["online"] + online_delta)
+            if rx or tx or item["online"] > 0:
+                item["last_seen"] = int(time.time())
 
-    async def tcp_pipe(self, reader, writer, endpoint, direction):
+    async def relay(self, reader, writer, endpoint, direction):
         try:
             while True:
                 data = await reader.read(131072)
@@ -57,9 +81,9 @@ class Runtime:
                 writer.write(data)
                 await writer.drain()
                 if direction == "rx":
-                    await self.change(endpoint.user_id, endpoint.kind, rx=len(data))
+                    await self.change(endpoint, rx=len(data))
                 else:
-                    await self.change(endpoint.user_id, endpoint.kind, tx=len(data))
+                    await self.change(endpoint, tx=len(data))
         finally:
             try:
                 writer.close()
@@ -68,14 +92,14 @@ class Runtime:
                 pass
 
     async def tcp_connection(self, client_reader, client_writer, endpoint):
-        await self.change(endpoint.user_id, "tcp", online_delta=1)
+        await self.change(endpoint, online_delta=1)
         try:
             server_reader, server_writer = await asyncio.open_connection(
                 "127.0.0.1", Config.INTERNAL_SSH_PORT
             )
             await asyncio.gather(
-                self.tcp_pipe(client_reader, server_writer, endpoint, "rx"),
-                self.tcp_pipe(server_reader, client_writer, endpoint, "tx"),
+                self.relay(client_reader, server_writer, endpoint, "rx"),
+                self.relay(server_reader, client_writer, endpoint, "tx"),
             )
         except Exception:
             try:
@@ -84,14 +108,14 @@ class Runtime:
             except Exception:
                 pass
         finally:
-            await self.change(endpoint.user_id, "tcp", online_delta=-1)
+            await self.change(endpoint, online_delta=-1)
 
     async def ws_connection(self, websocket, endpoint):
         if websocket.request.path != f"/ws/{endpoint.token}":
             await websocket.close(code=1008, reason="invalid path")
             return
 
-        await self.change(endpoint.user_id, "ws", online_delta=1)
+        await self.change(endpoint, online_delta=1)
         backend_writer = None
         try:
             backend_reader, backend_writer = await asyncio.open_connection(
@@ -104,7 +128,7 @@ class Runtime:
                         message = message.encode()
                     backend_writer.write(message)
                     await backend_writer.drain()
-                    await self.change(endpoint.user_id, "ws", rx=len(message))
+                    await self.change(endpoint, rx=len(message))
 
             async def ssh_to_ws():
                 while True:
@@ -112,14 +136,17 @@ class Runtime:
                     if not data:
                         return
                     await websocket.send(data)
-                    await self.change(endpoint.user_id, "ws", tx=len(data))
+                    await self.change(endpoint, tx=len(data))
 
             await asyncio.gather(ws_to_ssh(), ssh_to_ws())
         finally:
-            await self.change(endpoint.user_id, "ws", online_delta=-1)
+            await self.change(endpoint, online_delta=-1)
             if backend_writer:
                 backend_writer.close()
-                await backend_writer.wait_closed()
+                try:
+                    await backend_writer.wait_closed()
+                except Exception:
+                    pass
 
     async def open_tcp(self, endpoint):
         return await asyncio.start_server(
@@ -135,6 +162,7 @@ class Runtime:
             max_size=None,
             ping_interval=25,
             ping_timeout=20,
+            compression=None,
         )
 
     async def reconcile(self):
@@ -165,54 +193,125 @@ class Runtime:
             except asyncio.TimeoutError:
                 pass
 
-    async def flush(self):
+    async def snapshot(self):
         async with self.lock:
-            snapshot = {key: dict(value) for key, value in self.counters.items()}
-            for value in self.counters.values():
-                value["rx"] = 0
-                value["tx"] = 0
+            entries = [dict(value) for value in self.state.values()]
 
-        if not snapshot:
+        users = {}
+        for item in entries:
+            user = users.setdefault(item["username"], {
+                "tcp_online": 0,
+                "ws_online": 0,
+                "pending_rx": 0,
+                "pending_tx": 0,
+                "live_rx": 0,
+                "live_tx": 0,
+                "last_seen": 0,
+            })
+            user[f"{item['kind']}_online"] = item["online"]
+            user["pending_rx"] += item["rx_pending"]
+            user["pending_tx"] += item["tx_pending"]
+            user["live_rx"] += item["rx_live"]
+            user["live_tx"] += item["tx_live"]
+            user["last_seen"] = max(user["last_seen"], item["last_seen"])
+
+        payload = {
+            "updated_at": int(time.time()),
+            "users": users,
+        }
+
+        self.live_path.parent.mkdir(parents=True, exist_ok=True)
+        temp = self.live_path.with_suffix(".tmp")
+        temp.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
+        os.chmod(temp, 0o660)
+        os.replace(temp, self.live_path)
+
+    async def flush_db(self):
+        async with self.lock:
+            pending = []
+            for value in self.state.values():
+                if value["rx_pending"] or value["tx_pending"]:
+                    pending.append((
+                        value["rx_pending"],
+                        value["tx_pending"],
+                        value["online"],
+                        value["last_seen"],
+                        value["user_id"],
+                        value["kind"],
+                    ))
+                    value["rx_pending"] = 0
+                    value["tx_pending"] = 0
+                else:
+                    pending.append((
+                        0, 0, value["online"], value["last_seen"],
+                        value["user_id"], value["kind"],
+                    ))
+
+        if not pending:
             return
 
-        now = int(time.time())
-        with connect() as conn:
-            for (uid, kind), value in snapshot.items():
-                conn.execute("""
-                INSERT INTO endpoint_usage(user_id,endpoint,rx_bytes,tx_bytes,online,last_seen)
-                VALUES(?,?,?,?,?,?)
-                ON CONFLICT(user_id,endpoint) DO UPDATE SET
-                  rx_bytes=endpoint_usage.rx_bytes+excluded.rx_bytes,
-                  tx_bytes=endpoint_usage.tx_bytes+excluded.tx_bytes,
-                  online=excluded.online,
-                  last_seen=CASE WHEN excluded.online>0 THEN excluded.last_seen ELSE endpoint_usage.last_seen END
-                """, (uid, kind, value["rx"], value["tx"], value["online"], now))
+        for attempt in range(5):
+            try:
+                with connect() as conn:
+                    conn.execute("BEGIN IMMEDIATE")
+                    for rx, tx, online, last_seen, user_id, kind in pending:
+                        online_column = "online_tcp" if kind == "tcp" else "online_ws"
+                        conn.execute(f"""
+                        UPDATE users
+                        SET rx_bytes=rx_bytes+?,
+                            tx_bytes=tx_bytes+?,
+                            {online_column}=?,
+                            last_seen=MAX(last_seen,?),
+                            updated_at=CURRENT_TIMESTAMP
+                        WHERE id=?
+                        """, (rx, tx, online, last_seen, user_id))
+                    conn.commit()
+                return
+            except sqlite3.OperationalError:
+                await asyncio.sleep(0.15 * (attempt + 1))
+            except Exception:
+                await asyncio.sleep(0.15 * (attempt + 1))
 
-            conn.execute("""
-            UPDATE users SET
-              rx_bytes=COALESCE((SELECT SUM(rx_bytes) FROM endpoint_usage e WHERE e.user_id=users.id),0),
-              tx_bytes=COALESCE((SELECT SUM(tx_bytes) FROM endpoint_usage e WHERE e.user_id=users.id),0),
-              online_tcp=COALESCE((SELECT online FROM endpoint_usage e WHERE e.user_id=users.id AND e.endpoint='tcp'),0),
-              online_ws=COALESCE((SELECT online FROM endpoint_usage e WHERE e.user_id=users.id AND e.endpoint='ws'),0),
-              last_seen=COALESCE((SELECT MAX(last_seen) FROM endpoint_usage e WHERE e.user_id=users.id),0),
-              updated_at=CURRENT_TIMESTAMP
-            """)
-            conn.commit()
+        # Restore unsaved byte deltas so they are retried later.
+        async with self.lock:
+            for rx, tx, _online, _last_seen, user_id, kind in pending:
+                item = self.state.get((user_id, kind))
+                if item:
+                    item["rx_pending"] += rx
+                    item["tx_pending"] += tx
 
-    async def flush_loop(self):
+    async def writer_loop(self):
         while not self.stop.is_set():
             try:
-                await asyncio.wait_for(self.stop.wait(), timeout=3)
+                await self.snapshot()
+                await self.flush_db()
+            except Exception:
+                pass
+            try:
+                await asyncio.wait_for(self.stop.wait(), timeout=1)
             except asyncio.TimeoutError:
-                await self.flush()
-        await self.flush()
+                pass
+
+        try:
+            await self.snapshot()
+            await self.flush_db()
+        except Exception:
+            pass
+
+    async def reset_online_on_start(self):
+        with connect() as conn:
+            conn.execute("UPDATE users SET online_tcp=0,online_ws=0")
+            conn.commit()
+        self.live_path.unlink(missing_ok=True)
 
     async def run(self):
+        await self.reset_online_on_start()
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGTERM, signal.SIGINT):
             loop.add_signal_handler(sig, self.stop.set)
+
         await self.reconcile()
-        await asyncio.gather(self.reconcile_loop(), self.flush_loop())
+        await asyncio.gather(self.reconcile_loop(), self.writer_loop())
 
 async def main():
     init_db(Config.DB_PATH)

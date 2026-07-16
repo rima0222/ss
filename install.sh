@@ -130,6 +130,7 @@ CUSTOM_PANEL_TCP_PORT_END=24999
 CUSTOM_PANEL_WS_PORT_START=25000
 CUSTOM_PANEL_WS_PORT_END=29999
 CUSTOM_PANEL_HELPER_SOCKET=/run/custom-panel/helper.sock
+CUSTOM_PANEL_LIVE_PATH=/run/custom-panel/live.json
 EOF
 cat > "$APP/admin-credentials.txt" <<EOF
 Username: admin
@@ -264,6 +265,7 @@ runuser -u custompanel -- env \
   CUSTOM_PANEL_WS_PORT_START="25000" \
   CUSTOM_PANEL_WS_PORT_END="29999" \
   CUSTOM_PANEL_HELPER_SOCKET="/run/custom-panel/helper.sock" \
+  CUSTOM_PANEL_LIVE_PATH="/run/custom-panel/live.json" \
   "$APP/venv/bin/python" - <<'PY'
 from app.db import init_db, connect
 from app.config import Config
@@ -294,6 +296,12 @@ systemctl enable custom-panel-helper custom-panel-proxy custom-panel-accounting 
 systemctl start custom-panel-helper
 sleep 1
 systemctl start custom-panel-proxy
+sleep 2
+test -f /run/custom-panel/live.json || {
+  journalctl -u custom-panel-proxy -n 120 --no-pager || true
+  echo "Live accounting snapshot was not created."
+  exit 1
+}
 systemctl start custom-panel-accounting
 systemctl start custom-panel
 sleep 3
@@ -320,6 +328,7 @@ runuser -u custompanel -- env PYTHONPATH="$APP" \
   CUSTOM_PANEL_WS_PORT_START="25000" \
   CUSTOM_PANEL_WS_PORT_END="29999" \
   CUSTOM_PANEL_HELPER_SOCKET="/run/custom-panel/helper.sock" \
+  CUSTOM_PANEL_LIVE_PATH="/run/custom-panel/live.json" \
   "$APP/venv/bin/python" -c "from app.db import init_db,connect; from app.config import Config; init_db(Config.DB_PATH); c=connect().__enter__(); c.execute('PRAGMA wal_checkpoint(PASSIVE)'); c.close()"
 ss -lnt | grep -qE '[:.]5000[[:space:]]'
 

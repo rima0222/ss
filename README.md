@@ -1,50 +1,42 @@
-# Custom Panel v11 — OpenSSH + SSH WebSocket
+# Custom Panel v12 — Live OpenSSH + WebSocket Accounting
 
-v11 uses one unprivileged service account (`custompanel`) for the web panel,
-async proxy, accounting worker and SQLite database. The privileged Linux-account
-helper remains isolated as root.
+v12 replaces the previous dashboard accounting path.
 
-This prevents cross-user SQLite permission conflicts and fixes:
+## Why v11 could show Offline and 0 B
 
-```text
-attempt to write a readonly database
-```
+The proxy kept counters in memory and the panel only read SQLite. If a database
+flush was delayed or failed, the connection continued working but the panel
+could still display Offline and zero traffic.
 
-## Do OpenSSH and SSH WebSocket conflict?
+## v12 accounting
 
-No. They use different public endpoints and both forward to the same internal
-OpenSSH server:
+The proxy now produces two outputs:
 
-```text
-OpenSSH user port 20000-24999 ─┐
-                               ├─> internal OpenSSH :2222
-WebSocket port 25000-29999 ────┘
-```
+1. A live atomic snapshot at `/run/custom-panel/live.json`, updated every second.
+2. Batched persistent SQLite counters with retry handling.
 
-The proxy tracks TCP and WebSocket online state separately and combines their
-RX/TX values for the user's total traffic.
+The API combines the saved SQLite total with the current unflushed byte delta.
+Online status comes directly from the live proxy snapshot.
 
-## Features
+This gives:
 
-- OpenSSH TCP
-- SSH WebSocket
-- Enable either or both per user
-- Add, edit, pause, resume and delete
-- Change password, quota and remaining days
-- Accurate endpoint RX/TX accounting
-- Separate TCP/WS online status
-- Automatic quota/time suspension
-- Backup and restore
-- Encrypted user passwords
-- Hashed panel administrator password
-- Login rate limiting
-- One asyncio proxy process
-- One Gunicorn worker
-- Dark responsive dashboard
+- Online status within about one second.
+- Traffic updates within about one second.
+- Persistent totals after restart.
+- Low SQLite write frequency.
+- No process scan, `who`, `ss`, `netstat`, iptables accounting or per-user worker.
+
+## Protocol isolation
+
+OpenSSH TCP and SSH WebSocket use separate public endpoint ranges:
+
+- OpenSSH: `20000-24999/tcp`
+- WebSocket: `25000-29999/tcp`
+
+Both forward to internal OpenSSH on port 2222 and do not bind the same public
+port, so they do not conflict.
 
 ## Install
-
-Upload all ZIP contents to the root of the GitHub repository, then run:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/rima0222/ss/main/install.sh -o /tmp/install.sh
@@ -52,19 +44,10 @@ bash -n /tmp/install.sh
 sudo bash /tmp/install.sh
 ```
 
-The installer performs an SQLite write test before starting services and a
-second health check after startup.
-
 ## Credentials
 
 ```bash
 sudo bash /etc/custom-panel/show-credentials.sh
-```
-
-Change administrator password:
-
-```bash
-sudo bash /etc/custom-panel/reset-admin-password.sh 'NEW_STRONG_PASSWORD'
 ```
 
 ## Diagnostics
@@ -73,25 +56,8 @@ sudo bash /etc/custom-panel/reset-admin-password.sh 'NEW_STRONG_PASSWORD'
 sudo bash /etc/custom-panel/diagnose.sh
 ```
 
-## Ports
+The diagnostic output includes the live JSON snapshot and stored database
+counters.
 
-- Panel: 5000/tcp
-- OpenSSH endpoints: 20000-24999/tcp
-- WebSocket endpoints: 25000-29999/tcp
-
-Static Shell and Python syntax validation has been completed. Real client and
-load tests must still be performed on the target VPS.
-
-## v11.1 installer fix
-
-The installer no longer runs `.env` with Bash `source`. Werkzeug password
-hashes contain `$` characters, and sourcing the file could produce errors such
-as:
-
-```text
-.env: line 3: $5: unbound variable
-.env: line 3: mM7YrCJLEhAhLUnx: unbound variable
-```
-
-The installer now passes environment variables directly and systemd reads the
-environment file literally.
+Shell and Python syntax are validated. Real OpenSSH and WebSocket traffic must
+still be tested on the target VPS.

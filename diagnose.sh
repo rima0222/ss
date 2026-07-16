@@ -42,3 +42,12 @@ with connect() as conn:
 print("SQLite writable: YES")
 PY
 fi
+
+
+echo "=== Live accounting ==="
+ls -lah /run/custom-panel/live.json 2>/dev/null || true
+cat /run/custom-panel/live.json 2>/dev/null || true
+echo
+echo "=== Database counters ==="
+sqlite3 /etc/custom-panel/data/panel.db \
+  "SELECT username,rx_bytes,tx_bytes,online_tcp,online_ws FROM users;" 2>/dev/null || true
