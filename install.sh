@@ -1,157 +1,160 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-APP_DIR="/etc/custom-panel"
-REPO_URL="${CUSTOM_PANEL_REPO_URL:-https://github.com/rima0222/ss.git}"
+APP=/etc/custom-panel
+REPO="${CUSTOM_PANEL_REPO_URL:-https://github.com/rima0222/ss.git}"
 CLEAN="${CUSTOM_PANEL_CLEAN_INSTALL:-1}"
 
 [[ "$EUID" -eq 0 ]] || { echo "Run as root."; exit 1; }
 
 backup_old(){
-  [[ -d "$APP_DIR" ]] || return 0
-  local stamp rescue
+  [[ -d "$APP" ]] || return 0
   stamp="$(date -u +%Y%m%d-%H%M%S)"
   rescue="/root/custom-panel-rescue-$stamp"
   mkdir -p "$rescue"
-  cp -a "$APP_DIR/data" "$rescue/" 2>/dev/null || true
-  cp -a "$APP_DIR/backups" "$rescue/" 2>/dev/null || true
-  cp -a "$APP_DIR/.env" "$rescue/" 2>/dev/null || true
-  cp -a "$APP_DIR/admin-credentials.txt" "$rescue/" 2>/dev/null || true
+  cp -a "$APP/data" "$rescue/" 2>/dev/null || true
+  cp -a "$APP/backups" "$rescue/" 2>/dev/null || true
+  cp -a "$APP/.env" "$rescue/" 2>/dev/null || true
+  cp -a "$APP/admin-credentials.txt" "$rescue/" 2>/dev/null || true
   tar -C /root -czf "$rescue.tar.gz" "$(basename "$rescue")" 2>/dev/null || true
 }
 
 if [[ "$CLEAN" == "1" ]]; then
-  systemctl disable --now custom-panel.service custom-panel-accounting.service 2>/dev/null || true
+  systemctl disable --now custom-panel custom-panel-proxy custom-panel-accounting 2>/dev/null || true
+  systemctl disable --now dropbear 2>/dev/null || true
   backup_old
   rm -f /etc/systemd/system/custom-panel.service
+  rm -f /etc/systemd/system/custom-panel-proxy.service
   rm -f /etc/systemd/system/custom-panel-accounting.service
-  rm -rf "$APP_DIR"
+  rm -rf "$APP"
   systemctl daemon-reload
 fi
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
-apt-get install -y python3 python3-venv git curl ca-certificates openssh-server sqlite3 ufw
+apt-get install -y \
+  python3 python3-venv git curl ca-certificates \
+  openssh-server dropbear sqlite3 ufw openssl
 
 systemctl enable --now ssh
+getent group panelusers >/dev/null || groupadd --system panelusers
 
-# Official Xray installation script.
-bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
+cat > /usr/local/bin/panel-hold <<'EOF'
+#!/usr/bin/env bash
+trap 'exit 0' TERM INT HUP
+while true; do sleep 3600; done
+EOF
+chmod 755 /usr/local/bin/panel-hold
 
-rm -rf "$APP_DIR"
-git clone --depth=1 "$REPO_URL" "$APP_DIR"
+cat > /etc/ssh/sshd_config.d/99-custom-panel.conf <<'EOF'
+Port 22
+Port 2222
+ListenAddress 0.0.0.0
+PasswordAuthentication yes
+KbdInteractiveAuthentication no
+PermitRootLogin prohibit-password
 
-python3 -m venv "$APP_DIR/venv"
-"$APP_DIR/venv/bin/pip" install --upgrade pip
-"$APP_DIR/venv/bin/pip" install -r "$APP_DIR/requirements.txt"
+Match Group panelusers
+    ForceCommand /usr/local/bin/panel-hold
+    PermitTTY no
+    X11Forwarding no
+    AllowAgentForwarding no
+    AllowTcpForwarding yes
+    GatewayPorts no
+EOF
+sshd -t
+systemctl restart ssh
 
-mkdir -p "$APP_DIR/data" "$APP_DIR/backups" "$APP_DIR/runtime" /var/log/xray
-chmod 750 "$APP_DIR" "$APP_DIR/data" "$APP_DIR/backups" "$APP_DIR/runtime"
-chown -R nobody:nogroup /var/log/xray 2>/dev/null || true
+mkdir -p /etc/default
+cat > /etc/default/dropbear <<'EOF'
+NO_START=0
+DROPBEAR_PORT=2223
+DROPBEAR_EXTRA_ARGS="-w -s"
+DROPBEAR_BANNER=""
+EOF
+systemctl enable --now dropbear
+
+rm -rf "$APP"
+git clone --depth=1 "$REPO" "$APP"
+python3 -m venv "$APP/venv"
+"$APP/venv/bin/pip" install --upgrade pip
+"$APP/venv/bin/pip" install -r "$APP/requirements.txt"
+
+mkdir -p "$APP/data" "$APP/backups" "$APP/runtime" "$APP/tls"
+chmod 750 "$APP" "$APP/data" "$APP/backups" "$APP/runtime"
 
 SERVER_HOST="${CUSTOM_PANEL_SERVER_HOST:-$(curl -4fsS --max-time 10 https://api.ipify.org || hostname -I | awk '{print $1}')}"
-[[ -n "$SERVER_HOST" ]] || { echo "Could not detect server IP."; exit 1; }
+[[ -n "$SERVER_HOST" ]] || { echo "Could not detect IP."; exit 1; }
+
+openssl req -x509 -newkey rsa:3072 -nodes -days 1825 \
+  -keyout "$APP/tls/server.key" \
+  -out "$APP/tls/server.crt" \
+  -subj "/CN=$SERVER_HOST" \
+  -addext "subjectAltName=IP:$SERVER_HOST"
+chmod 600 "$APP/tls/server.key"
 
 ADMIN_PASSWORD="$(python3 - <<'PY'
 import secrets
 print(secrets.token_urlsafe(18))
 PY
 )"
-SECRET_KEY="$(python3 - <<'PY'
+SECRET="$(python3 - <<'PY'
 import secrets
 print(secrets.token_hex(32))
 PY
 )"
 
-cat > "$APP_DIR/.env" <<EOF
-CUSTOM_PANEL_SECRET_KEY=$SECRET_KEY
+cat > "$APP/.env" <<EOF
+CUSTOM_PANEL_SECRET_KEY=$SECRET
 CUSTOM_PANEL_ADMIN_USERNAME=admin
 CUSTOM_PANEL_ADMIN_PASSWORD=$ADMIN_PASSWORD
-CUSTOM_PANEL_DB=$APP_DIR/data/panel.db
+CUSTOM_PANEL_DB=$APP/data/panel.db
 CUSTOM_PANEL_SERVER_HOST=$SERVER_HOST
-CUSTOM_PANEL_XRAY_PORT=8443
-CUSTOM_PANEL_XRAY_API=127.0.0.1:10085
-CUSTOM_PANEL_XRAY_CONFIG=/usr/local/etc/xray/config.json
+CUSTOM_PANEL_TLS_CERT=$APP/tls/server.crt
+CUSTOM_PANEL_TLS_KEY=$APP/tls/server.key
 EOF
 
-cat > "$APP_DIR/admin-credentials.txt" <<EOF
+cat > "$APP/admin-credentials.txt" <<EOF
 Username: admin
 Password: $ADMIN_PASSWORD
 EOF
-chmod 600 "$APP_DIR/.env" "$APP_DIR/admin-credentials.txt"
+chmod 600 "$APP/.env" "$APP/admin-credentials.txt"
 
-cat > /usr/local/etc/xray/config.json <<'EOF'
-{
-  "log": {
-    "loglevel": "warning",
-    "access": "/var/log/xray/access.log",
-    "error": "/var/log/xray/error.log"
-  },
-  "api": {
-    "tag": "api",
-    "services": ["StatsService", "HandlerService"]
-  },
-  "stats": {},
-  "policy": {
-    "levels": {
-      "0": {
-        "statsUserUplink": true,
-        "statsUserDownlink": true,
-        "statsUserOnline": true
-      }
-    }
-  },
-  "inbounds": [
-    {
-      "tag": "api",
-      "listen": "127.0.0.1",
-      "port": 10085,
-      "protocol": "tunnel",
-      "settings": {"rewriteAddress": "127.0.0.1"}
-    },
-    {
-      "tag": "vmess-in",
-      "listen": "0.0.0.0",
-      "port": 8443,
-      "protocol": "vmess",
-      "settings": {"clients": []},
-      "streamSettings": {"network": "tcp", "security": "none"}
-    }
-  ],
-  "outbounds": [
-    {"tag": "direct", "protocol": "freedom"},
-    {"tag": "block", "protocol": "blackhole"}
-  ],
-  "routing": {
-    "rules": [
-      {"type": "field", "inboundTag": ["api"], "outboundTag": "api"}
-    ]
-  }
-}
-EOF
-
-/usr/local/bin/xray run -test -config /usr/local/etc/xray/config.json
-systemctl enable --now xray
-
-cat > /etc/systemd/system/custom-panel-accounting.service <<EOF
+cat > /etc/systemd/system/custom-panel-proxy.service <<EOF
 [Unit]
-Description=Custom Panel accounting
-After=network-online.target xray.service
-Wants=network-online.target xray.service
+Description=Custom Panel per-user SSH proxies
+After=network-online.target ssh.service dropbear.service
+Wants=network-online.target
 
 [Service]
 Type=simple
 User=root
 Group=root
-WorkingDirectory=$APP_DIR
-EnvironmentFile=$APP_DIR/.env
-ExecStart=$APP_DIR/venv/bin/python -m app.accounting_worker
-Restart=on-failure
+WorkingDirectory=$APP
+EnvironmentFile=$APP/.env
+ExecStart=$APP/venv/bin/python -m app.proxy_runtime
+Restart=always
+RestartSec=2
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+cat > /etc/systemd/system/custom-panel-accounting.service <<EOF
+[Unit]
+Description=Custom Panel accounting
+After=custom-panel-proxy.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=$APP
+EnvironmentFile=$APP/.env
+ExecStart=$APP/venv/bin/python -m app.accounting_worker
+Restart=always
 RestartSec=3
-PrivateTmp=true
-ProtectSystem=full
-ReadWritePaths=$APP_DIR/data $APP_DIR/runtime /run
-NoNewPrivileges=true
 
 [Install]
 WantedBy=multi-user.target
@@ -160,22 +163,20 @@ EOF
 cat > /etc/systemd/system/custom-panel.service <<EOF
 [Unit]
 Description=Custom Panel
-After=network-online.target xray.service
-Wants=network-online.target xray.service
+After=network-online.target custom-panel-proxy.service
 
 [Service]
 Type=simple
 User=root
 Group=root
-WorkingDirectory=$APP_DIR
-EnvironmentFile=$APP_DIR/.env
-ExecStart=$APP_DIR/venv/bin/gunicorn --workers 2 --threads 4 --timeout 30 --bind 0.0.0.0:5000 "app:create_app()"
-Restart=on-failure
+WorkingDirectory=$APP
+EnvironmentFile=$APP/.env
+ExecStart=$APP/venv/bin/gunicorn --workers 2 --threads 4 --timeout 30 --bind 0.0.0.0:5000 "app:create_app()"
+Restart=always
 RestartSec=3
-PrivateTmp=true
 ProtectSystem=no
 NoNewPrivileges=false
-ReadWritePaths=$APP_DIR/data $APP_DIR/backups $APP_DIR/runtime /usr/local/etc/xray /run
+ReadWritePaths=$APP/data $APP/backups $APP/runtime /etc/passwd /etc/shadow /etc/group /run
 LimitNOFILE=65535
 
 [Install]
@@ -184,19 +185,21 @@ EOF
 
 ufw allow OpenSSH >/dev/null 2>&1 || true
 ufw allow 5000/tcp >/dev/null 2>&1 || true
-ufw allow 8443/tcp >/dev/null 2>&1 || true
+ufw allow 20000:39999/tcp >/dev/null 2>&1 || true
 ufw --force enable >/dev/null 2>&1 || true
 
 systemctl daemon-reload
-systemctl enable custom-panel.service custom-panel-accounting.service >/dev/null
-systemctl restart custom-panel.service custom-panel-accounting.service
+systemctl enable custom-panel-proxy custom-panel-accounting custom-panel >/dev/null
+systemctl restart custom-panel-proxy custom-panel-accounting custom-panel
 sleep 2
 
-systemctl is-active --quiet xray || { journalctl -u xray -n 100 --no-pager; exit 1; }
-systemctl is-active --quiet custom-panel || { journalctl -u custom-panel -n 100 --no-pager; exit 1; }
-systemctl is-active --quiet custom-panel-accounting || { journalctl -u custom-panel-accounting -n 100 --no-pager; exit 1; }
+systemctl is-active --quiet ssh || exit 1
+systemctl is-active --quiet dropbear || exit 1
+systemctl is-active --quiet custom-panel-proxy || { journalctl -u custom-panel-proxy -n 100 --no-pager; exit 1; }
+systemctl is-active --quiet custom-panel-accounting || exit 1
+systemctl is-active --quiet custom-panel || exit 1
 curl -fsS --max-time 10 http://127.0.0.1:5000/login >/dev/null
 
 echo "Installed: http://$SERVER_HOST:5000"
-echo "Credentials: $APP_DIR/admin-credentials.txt"
-echo "Show credentials: sudo bash $APP_DIR/show-credentials.sh"
+echo "Credentials: $APP/admin-credentials.txt"
+echo "Show credentials: sudo bash $APP/show-credentials.sh"

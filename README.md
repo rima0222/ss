@@ -1,45 +1,42 @@
-# Custom Panel v3 — SSH + Xray
+# Custom Panel v4 — SSH Suite
 
-A fresh Ubuntu panel supporting:
+Supported transports:
 
-- SSH accounts
-- Xray VMess users
-- Xray per-user upload/download accounting
-- Xray online status
-- SSH online status
-- pause/resume/edit/delete
-- JSON backup and restore
-- dark responsive frontend
-- one-line GitHub installation
+- OpenSSH
+- Dropbear
+- SSH WebSocket
+- SSH TLS
+
+Each user receives dedicated external endpoints. Traffic is counted in the
+proxy layer as exact RX/TX for that assigned endpoint, and online status is
+based on active proxy connections.
+
+## Important limitation
+
+The byte counter is exact for traffic passing through the assigned per-user
+port/path. Raw TCP SSH itself does not reveal the authenticated username to the
+proxy before encryption/authentication, so users must use their own assigned
+endpoint. Sharing another user's endpoint would attribute traffic to that
+endpoint owner.
 
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/rima0222/ss/main/install.sh \
-  -o /tmp/install.sh
-
+curl -fsSL https://raw.githubusercontent.com/rima0222/ss/main/install.sh -o /tmp/install.sh
 bash -n /tmp/install.sh
 sudo bash /tmp/install.sh
 ```
+
+## Ports
+
+- Panel: 5000/tcp
+- Per-user OpenSSH: 20000-24999/tcp
+- Per-user Dropbear: 25000-29999/tcp
+- Per-user WebSocket: 30000-34999/tcp
+- Per-user TLS: 35000-39999/tcp
 
 ## Credentials
 
 ```bash
 sudo bash /etc/custom-panel/show-credentials.sh
 ```
-
-## Accuracy note
-
-Xray traffic is collected from Xray's official Stats API using the per-user
-email identifier and reset-based delta accounting.
-
-SSH online state is read from active `sshd` processes. Exact per-user SSH
-network-byte accounting is not included because OpenSSH does not expose a
-native per-user traffic counter. The panel displays SSH traffic as `N/A`
-instead of inventing a number.
-
-## Ports
-
-- 22/tcp: SSH
-- 5000/tcp: panel
-- 8443/tcp: Xray VMess

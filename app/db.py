@@ -2,15 +2,14 @@ import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 
-_DB_PATH = None
+_DB = None
 
 def init_db(path):
-    global _DB_PATH
-    _DB_PATH = path
+    global _DB
+    _DB = path
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-
-    with connect() as conn:
-        conn.executescript("""
+    with connect() as c:
+        c.executescript("""
         PRAGMA journal_mode=WAL;
         PRAGMA synchronous=NORMAL;
         PRAGMA foreign_keys=ON;
@@ -23,38 +22,53 @@ def init_db(path):
           expire_date TEXT,
           paused INTEGER NOT NULL DEFAULT 0,
           status TEXT NOT NULL DEFAULT 'Active',
-          ssh_enabled INTEGER NOT NULL DEFAULT 1,
-          xray_enabled INTEGER NOT NULL DEFAULT 0,
-          xray_uuid TEXT,
-          xray_email TEXT,
-          xray_rx_bytes INTEGER NOT NULL DEFAULT 0,
-          xray_tx_bytes INTEGER NOT NULL DEFAULT 0,
-          ssh_online INTEGER NOT NULL DEFAULT 0,
-          xray_online INTEGER NOT NULL DEFAULT 0,
-          last_seen_ssh INTEGER NOT NULL DEFAULT 0,
-          last_seen_xray INTEGER NOT NULL DEFAULT 0,
+
+          openssh_enabled INTEGER NOT NULL DEFAULT 1,
+          dropbear_enabled INTEGER NOT NULL DEFAULT 0,
+          ws_enabled INTEGER NOT NULL DEFAULT 0,
+          tls_enabled INTEGER NOT NULL DEFAULT 0,
+
+          openssh_port INTEGER UNIQUE,
+          dropbear_port INTEGER UNIQUE,
+          ws_port INTEGER UNIQUE,
+          tls_port INTEGER UNIQUE,
+          ws_token TEXT,
+
+          rx_bytes INTEGER NOT NULL DEFAULT 0,
+          tx_bytes INTEGER NOT NULL DEFAULT 0,
+          online_count INTEGER NOT NULL DEFAULT 0,
+          last_seen INTEGER NOT NULL DEFAULT 0,
+
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
           updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
 
-        CREATE INDEX IF NOT EXISTS idx_users_status
-          ON users(paused, status, expire_date);
-        CREATE INDEX IF NOT EXISTS idx_users_xray_email
-          ON users(xray_email);
+        CREATE TABLE IF NOT EXISTS proxy_counters(
+          user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          transport TEXT NOT NULL,
+          rx_bytes INTEGER NOT NULL DEFAULT 0,
+          tx_bytes INTEGER NOT NULL DEFAULT 0,
+          online INTEGER NOT NULL DEFAULT 0,
+          last_seen INTEGER NOT NULL DEFAULT 0,
+          PRIMARY KEY(user_id, transport)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_users_state
+          ON users(paused,status,expire_date);
         """)
-        conn.commit()
+        c.commit()
 
 @contextmanager
 def connect():
-    if not _DB_PATH:
+    if not _DB:
         raise RuntimeError("database not initialized")
-    conn = sqlite3.connect(_DB_PATH, timeout=15, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
-    conn.execute("PRAGMA busy_timeout=15000")
-    conn.execute("PRAGMA foreign_keys=ON")
+    c = sqlite3.connect(_DB, timeout=15, check_same_thread=False)
+    c.row_factory = sqlite3.Row
+    c.execute("PRAGMA journal_mode=WAL")
+    c.execute("PRAGMA synchronous=NORMAL")
+    c.execute("PRAGMA busy_timeout=15000")
+    c.execute("PRAGMA foreign_keys=ON")
     try:
-        yield conn
+        yield c
     finally:
-        conn.close()
+        c.close()

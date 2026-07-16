@@ -1,37 +1,45 @@
 import datetime as dt
-import uuid
+import secrets
 from io import BytesIO
 
-from flask import Blueprint, flash, redirect, render_template, request, send_file, url_for
+from flask import Blueprint, flash, redirect, render_template, request, send_file, url_for, current_app
 
 from .auth import login_required
 from .db import connect
+from .linux_users import create_or_update, pause as pause_linux, resume as resume_linux, delete as delete_linux
+from .ports import allocate
 from .security import validate_csrf
-from .system_accounts import create_or_update, delete as delete_linux, pause as pause_linux, resume as resume_linux
-from .xray_manager import regenerate, vmess_uri
 
 users_bp = Blueprint("users", __name__)
 
 def get_user(username):
-    with connect() as conn:
-        row = conn.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
+    with connect() as c:
+        row = c.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
     return dict(row) if row else None
 
 def list_users():
     today = dt.date.today()
-    with connect() as conn:
-        rows = [dict(row) for row in conn.execute("SELECT * FROM users ORDER BY id DESC")]
-    for user in rows:
+    with connect() as c:
+        rows = [dict(r) for r in c.execute("SELECT * FROM users ORDER BY id DESC")]
+        details = {
+            r["user_id"]: []
+            for r in c.execute("SELECT user_id FROM proxy_counters GROUP BY user_id")
+        }
+        for r in c.execute("SELECT * FROM proxy_counters"):
+            details.setdefault(r["user_id"], []).append(dict(r))
+
+    for u in rows:
         try:
-            user["remaining_days"] = max(
-                0, (dt.date.fromisoformat(user["expire_date"]) - today).days
-            )
+            u["remaining_days"] = max(0, (dt.date.fromisoformat(u["expire_date"]) - today).days)
         except Exception:
-            user["remaining_days"] = 0
-        user["xray_used_gb"] = (
-            int(user["xray_rx_bytes"] or 0) + int(user["xray_tx_bytes"] or 0)
-        ) / (1024 ** 3)
+            u["remaining_days"] = 0
+        u["used_gb"] = (int(u["rx_bytes"] or 0) + int(u["tx_bytes"] or 0)) / (1024**3)
+        u["transport_stats"] = details.get(u["id"], [])
     return rows
+
+def restart_proxy():
+    import subprocess
+    subprocess.run(["systemctl", "restart", "custom-panel-proxy"], check=False)
 
 @users_bp.get("/")
 @login_required
@@ -40,42 +48,51 @@ def index():
 
 @users_bp.post("/users")
 @login_required
-def add_user():
+def add():
     validate_csrf()
     try:
         username = request.form["username"].strip()
         password = request.form["password"]
         limit_gb = float(request.form["limit_gb"])
         days = int(request.form["days"])
-        ssh_enabled = int("ssh" in request.form.getlist("protocols"))
-        xray_enabled = int("xray" in request.form.getlist("protocols"))
-        if not ssh_enabled and not xray_enabled:
-            raise ValueError("حداقل یک پروتکل را انتخاب کن.")
+        selected = set(request.form.getlist("protocols"))
+        if not selected:
+            raise ValueError("حداقل یک روش اتصال انتخاب کن.")
         if get_user(username):
             raise ValueError("این نام کاربری قبلاً وجود دارد.")
 
-        xray_uuid = str(uuid.uuid4()) if xray_enabled else None
-        xray_email = f"{username}@panel.local" if xray_enabled else None
+        create_or_update(username, password)
+
+        values = {
+            "openssh_enabled": int("openssh" in selected),
+            "dropbear_enabled": int("dropbear" in selected),
+            "ws_enabled": int("ws" in selected),
+            "tls_enabled": int("tls" in selected),
+            "openssh_port": allocate("openssh_port", "openssh") if "openssh" in selected else None,
+            "dropbear_port": allocate("dropbear_port", "dropbear") if "dropbear" in selected else None,
+            "ws_port": allocate("ws_port", "ws") if "ws" in selected else None,
+            "tls_port": allocate("tls_port", "tls") if "tls" in selected else None,
+            "ws_token": secrets.token_urlsafe(18) if "ws" in selected else None,
+        }
+
         expire = (dt.date.today() + dt.timedelta(days=days)).isoformat()
-
-        if ssh_enabled:
-            create_or_update(username, password)
-
-        with connect() as conn:
-            conn.execute("""
+        with connect() as c:
+            c.execute("""
             INSERT INTO users(
-              username,password,limit_gb,expire_date,ssh_enabled,xray_enabled,
-              xray_uuid,xray_email
-            ) VALUES(?,?,?,?,?,?,?,?)
+              username,password,limit_gb,expire_date,
+              openssh_enabled,dropbear_enabled,ws_enabled,tls_enabled,
+              openssh_port,dropbear_port,ws_port,tls_port,ws_token
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
-                username, password, limit_gb, expire, ssh_enabled, xray_enabled,
-                xray_uuid, xray_email,
+                username,password,limit_gb,expire,
+                values["openssh_enabled"],values["dropbear_enabled"],
+                values["ws_enabled"],values["tls_enabled"],
+                values["openssh_port"],values["dropbear_port"],
+                values["ws_port"],values["tls_port"],values["ws_token"],
             ))
-            conn.commit()
+            c.commit()
 
-        if xray_enabled:
-            regenerate()
-
+        restart_proxy()
         flash("کاربر ساخته شد.", "success")
     except Exception as exc:
         flash(f"خطا: {exc}", "error")
@@ -83,12 +100,11 @@ def add_user():
 
 @users_bp.post("/users/<username>/edit")
 @login_required
-def edit_user(username):
+def edit(username):
     validate_csrf()
     user = get_user(username)
     if not user:
         return redirect(url_for("users.index"))
-
     try:
         password = request.form.get("password") or user["password"]
         limit_gb = float(request.form.get("limit_gb", user["limit_gb"]))
@@ -97,17 +113,14 @@ def edit_user(username):
         if remaining not in (None, ""):
             expire = (dt.date.today() + dt.timedelta(days=int(remaining))).isoformat()
 
-        if user["ssh_enabled"]:
-            create_or_update(username, password)
-
-        with connect() as conn:
-            conn.execute("""
+        create_or_update(username, password)
+        with connect() as c:
+            c.execute("""
             UPDATE users
             SET password=?,limit_gb=?,expire_date=?,updated_at=CURRENT_TIMESTAMP
             WHERE username=?
-            """, (password, limit_gb, expire, username))
-            conn.commit()
-
+            """, (password,limit_gb,expire,username))
+            c.commit()
         flash("ویرایش ذخیره شد.", "success")
     except Exception as exc:
         flash(f"خطا: {exc}", "error")
@@ -115,88 +128,77 @@ def edit_user(username):
 
 @users_bp.post("/users/<username>/<action>")
 @login_required
-def user_action(username, action):
+def action(username, action):
     validate_csrf()
     user = get_user(username)
     if not user:
         return redirect(url_for("users.index"))
-
     try:
         if action == "pause":
-            if user["ssh_enabled"]:
-                pause_linux(username)
-            with connect() as conn:
-                conn.execute("""
-                UPDATE users SET paused=1,status='Paused',updated_at=CURRENT_TIMESTAMP
-                WHERE username=?
-                """, (username,))
-                conn.commit()
-            if user["xray_enabled"]:
-                regenerate()
-
+            pause_linux(username)
+            with connect() as c:
+                c.execute("UPDATE users SET paused=1,status='Paused' WHERE username=?", (username,))
+                c.commit()
+            restart_proxy()
         elif action == "resume":
-            if user["ssh_enabled"]:
-                resume_linux(username)
-            with connect() as conn:
-                conn.execute("""
-                UPDATE users SET paused=0,status='Active',updated_at=CURRENT_TIMESTAMP
-                WHERE username=?
-                """, (username,))
-                conn.commit()
-            if user["xray_enabled"]:
-                regenerate()
-
+            resume_linux(username)
+            with connect() as c:
+                c.execute("UPDATE users SET paused=0,status='Active' WHERE username=?", (username,))
+                c.commit()
+            restart_proxy()
         elif action == "reset-traffic":
-            with connect() as conn:
-                conn.execute("""
-                UPDATE users SET xray_rx_bytes=0,xray_tx_bytes=0,updated_at=CURRENT_TIMESTAMP
-                WHERE username=?
-                """, (username,))
-                conn.commit()
-
+            with connect() as c:
+                c.execute("DELETE FROM proxy_counters WHERE user_id=?", (user["id"],))
+                c.execute("UPDATE users SET rx_bytes=0,tx_bytes=0 WHERE id=?", (user["id"],))
+                c.commit()
         elif action == "delete":
-            if user["ssh_enabled"]:
-                delete_linux(username)
-            with connect() as conn:
-                conn.execute("DELETE FROM users WHERE username=?", (username,))
-                conn.commit()
-            if user["xray_enabled"]:
-                regenerate()
-
+            delete_linux(username)
+            with connect() as c:
+                c.execute("DELETE FROM users WHERE username=?", (username,))
+                c.commit()
+            restart_proxy()
         flash("عملیات انجام شد.", "success")
     except Exception as exc:
         flash(f"خطا: {exc}", "error")
     return redirect(url_for("users.index"))
 
-@users_bp.get("/users/<username>/xray")
+@users_bp.get("/users/<username>/config")
 @login_required
-def xray_config(username):
+def config(username):
     user = get_user(username)
-    if not user or not user["xray_enabled"]:
-        return ("Not found", 404)
-    content = vmess_uri(user) + "\n"
-    return send_file(
-        BytesIO(content.encode()),
-        as_attachment=True,
-        download_name=f"{username}-vmess.txt",
-        mimetype="text/plain",
-    )
+    if not user:
+        return ("Not found",404)
 
-@users_bp.get("/users/<username>/ssh")
-@login_required
-def ssh_config(username):
-    user = get_user(username)
-    if not user or not user["ssh_enabled"]:
-        return ("Not found", 404)
-    content = (
-        f"Server: {request.host.split(':')[0]}\n"
-        f"Port: 22\n"
-        f"Username: {user['username']}\n"
-        f"Password: {user['password']}\n"
-    )
+    host = current_app.config["SERVER_HOST"]
+    lines = [
+        f"Username: {user['username']}",
+        f"Password: {user['password']}",
+        "",
+    ]
+    if user["openssh_enabled"]:
+        lines += ["OpenSSH:", f"Host: {host}", f"Port: {user['openssh_port']}", ""]
+    if user["dropbear_enabled"]:
+        lines += ["Dropbear:", f"Host: {host}", f"Port: {user['dropbear_port']}", ""]
+    if user["ws_enabled"]:
+        lines += [
+            "SSH WebSocket:",
+            f"URL: ws://{host}:{user['ws_port']}/ws/{user['ws_token']}",
+            "Backend: OpenSSH",
+            "",
+        ]
+    if user["tls_enabled"]:
+        lines += [
+            "SSH TLS:",
+            f"Host: {host}",
+            f"Port: {user['tls_port']}",
+            "Use a TLS/stunnel client.",
+            "",
+        ]
+
+    data = "\n".join(lines).encode()
     return send_file(
-        BytesIO(content.encode()),
+        BytesIO(data),
         as_attachment=True,
-        download_name=f"{username}-ssh.txt",
+        download_name=f"{username}-ssh-suite.txt",
         mimetype="text/plain",
     )

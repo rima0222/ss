@@ -1,22 +1,16 @@
 <!doctype html>
 <html lang="fa" dir="rtl">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>ورود | Control Panel</title>
-  <link rel="stylesheet" href="/static/app.css">
-</head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ورود</title><link rel="stylesheet" href="/static/app.css"></head>
 <body class="login-page">
-  <main class="login-card glass">
-    <div class="logo">CP</div>
-    <h1>ورود مدیر</h1>
-    <p>SSH + Xray Control Panel</p>
-    {% if error %}<div class="notice error">{{error}}</div>{% endif %}
-    <form method="post" class="stack">
-      <input name="username" placeholder="نام کاربری" autocomplete="username" required>
-      <input name="password" type="password" placeholder="رمز عبور" autocomplete="current-password" required>
-      <button type="submit">ورود</button>
-    </form>
-  </main>
-</body>
-</html>
+<main class="login-card surface">
+  <div class="brand-mark">CP</div>
+  <h1>ورود مدیر</h1>
+  <p class="muted">SSH Suite Control Panel</p>
+  {% if error %}<div class="alert error">{{error}}</div>{% endif %}
+  <form method="post" class="stack">
+    <input name="username" placeholder="نام کاربری" required>
+    <input name="password" type="password" placeholder="رمز عبور" required>
+    <button class="button primary">ورود</button>
+  </form>
+</main>
+</body></html>

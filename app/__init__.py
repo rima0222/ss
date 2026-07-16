@@ -11,9 +11,7 @@ def create_app():
     app = Flask(__name__, template_folder="../templates", static_folder="../static")
     app.config.from_object(Config)
     init_db(app.config["DB_PATH"])
-
     app.jinja_env.globals["csrf_token"] = csrf_token
-
     app.register_blueprint(auth_bp)
     app.register_blueprint(users_bp)
     app.register_blueprint(backup_bp)

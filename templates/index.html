@@ -1,146 +1,98 @@
 <!doctype html>
 <html lang="fa" dir="rtl">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Custom Panel</title>
-  <link rel="stylesheet" href="/static/app.css">
-</head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SSH Suite Panel</title><link rel="stylesheet" href="/static/app.css"></head>
 <body>
-<div class="ambient a1"></div><div class="ambient a2"></div>
-<main class="container">
-  <header class="topbar glass">
-    <div>
-      <div class="eyebrow">CONTROL CENTER</div>
-      <h1>SSH + Xray Panel</h1>
+<div class="orb one"></div><div class="orb two"></div>
+<main class="shell">
+<header class="navbar surface">
+  <div class="brand"><div class="brand-mark">CP</div><div><span class="overline">CUSTOM PANEL</span><h1>SSH Suite Control Center</h1></div></div>
+  <div class="nav-actions"><a class="button success" href="/backup/download">دانلود بکاپ</a><a class="button neutral" href="/logout">خروج</a></div>
+</header>
+
+{% with messages=get_flashed_messages(with_categories=true) %}
+{% for category,message in messages %}<div class="alert {{category}}">{{message}}</div>{% endfor %}
+{% endwith %}
+
+<section class="metrics">
+  <article class="metric surface"><span>کل کاربران</span><strong id="total_users">0</strong></article>
+  <article class="metric surface"><span>فعال</span><strong id="active_users">0</strong></article>
+  <article class="metric surface"><span>آنلاین</span><strong id="online_users">0</strong></article>
+  <article class="metric surface"><span>حجم کل</span><strong><b id="total_limit_gb">0</b> GB</strong></article>
+  <article class="metric surface"><span>مصرف کل</span><strong><b id="total_used_gb">0</b> GB</strong></article>
+  <article class="metric surface"><span>RAM</span><strong><b id="memory_percent">0</b>%</strong></article>
+</section>
+
+<section class="workspace">
+<article class="card surface">
+  <span class="overline">USER PROVISIONING</span><h2>ساخت کاربر</h2>
+  <form action="/users" method="post" class="create-grid">
+    <input type="hidden" name="_csrf" value="{{csrf_token()}}">
+    <label><span>نام کاربری</span><input name="username" required></label>
+    <label><span>رمز عبور</span><input name="password" required></label>
+    <label><span>حجم GB</span><input name="limit_gb" type="number" min="0" step="0.1" required></label>
+    <label><span>روز اعتبار</span><input name="days" type="number" min="1" required></label>
+    <div class="protocols">
+      <label><input type="checkbox" name="protocols" value="openssh" checked>OpenSSH</label>
+      <label><input type="checkbox" name="protocols" value="dropbear">Dropbear</label>
+      <label><input type="checkbox" name="protocols" value="ws">SSH WS</label>
+      <label><input type="checkbox" name="protocols" value="tls">SSH TLS</label>
     </div>
-    <div class="top-actions">
-      <a class="btn green" href="/backup/download">دانلود بکاپ</a>
-      <a class="btn ghost" href="/logout">خروج</a>
-    </div>
-  </header>
+    <button class="button primary wide">ساخت کاربر</button>
+  </form>
+</article>
 
-  {% with messages=get_flashed_messages(with_categories=true) %}
-    {% for category,message in messages %}
-      <div class="notice {{category}}">{{message}}</div>
-    {% endfor %}
-  {% endwith %}
+<article class="card surface">
+  <span class="overline">DISASTER RECOVERY</span><h2>بازیابی بکاپ</h2>
+  <form action="/backup/restore" method="post" enctype="multipart/form-data" class="stack">
+    <input type="hidden" name="_csrf" value="{{csrf_token()}}">
+    <input type="file" name="backup_file" accept=".json" required>
+    <button class="button primary">بازیابی</button>
+  </form>
+  <p class="muted">بکاپ شامل پورت‌ها، توکن‌ها، مصرف و وضعیت کاربران است.</p>
+</article>
+</section>
 
-  <section class="stats-grid">
-    <article class="stat glass"><span>کل کاربران</span><strong id="total_users">0</strong></article>
-    <article class="stat glass"><span>کاربران فعال</span><strong id="active_users">0</strong></article>
-    <article class="stat glass"><span>آنلاین</span><strong id="online_users">0</strong></article>
-    <article class="stat glass"><span>حجم کل</span><strong><b id="total_limit_gb">0</b> GB</strong></article>
-    <article class="stat glass"><span>مصرف Xray</span><strong><b id="total_used_gb">0</b> GB</strong></article>
-    <article class="stat glass"><span>RAM</span><strong><b id="memory_percent">0</b>%</strong></article>
-  </section>
-
-  <section class="grid-two">
-    <article class="panel glass">
-      <h2>ساخت کاربر</h2>
-      <form action="/users" method="post" class="form-grid">
+<section class="table-card surface">
+<div class="toolbar"><div><span class="overline">USER DIRECTORY</span><h2>مدیریت کاربران</h2></div><input id="search" placeholder="جستجو..." oninput="filterRows()"></div>
+<div class="table-wrap"><table>
+<thead><tr><th>کاربر</th><th>روش‌ها</th><th>وضعیت</th><th>آنلاین</th><th>مصرف</th><th>اعتبار</th><th>عملیات</th></tr></thead>
+<tbody id="rows">
+{% for u in users %}
+<tr data-search="{{u.username|lower}}">
+  <td><strong>{{u.username}}</strong></td>
+  <td>
+    {% if u.openssh_enabled %}<span class="tag">OpenSSH</span>{% endif %}
+    {% if u.dropbear_enabled %}<span class="tag">Dropbear</span>{% endif %}
+    {% if u.ws_enabled %}<span class="tag purple">WS</span>{% endif %}
+    {% if u.tls_enabled %}<span class="tag purple">TLS</span>{% endif %}
+  </td>
+  <td>{% if u.paused %}<span class="state paused">متوقف</span>{% else %}<span class="state active">فعال</span>{% endif %}</td>
+  <td><span data-online="{{u.username}}" class="online">○ Offline</span></td>
+  <td><strong><span data-used="{{u.username}}">{{'%.3f'|format(u.used_gb)}}</span> GB</strong></td>
+  <td>{{u.remaining_days}} روز</td>
+  <td><div class="actions">
+    <a class="mini" href="/users/{{u.username}}/config">کانفیگ</a>
+    {% if u.paused %}
+    <form action="/users/{{u.username}}/resume" method="post"><input type="hidden" name="_csrf" value="{{csrf_token()}}"><button class="mini success">فعال</button></form>
+    {% else %}
+    <form action="/users/{{u.username}}/pause" method="post"><input type="hidden" name="_csrf" value="{{csrf_token()}}"><button class="mini warning">توقف</button></form>
+    {% endif %}
+    <details><summary class="mini">ویرایش</summary>
+      <form action="/users/{{u.username}}/edit" method="post" class="popover">
         <input type="hidden" name="_csrf" value="{{csrf_token()}}">
-        <input name="username" placeholder="نام کاربری" required>
-        <input name="password" placeholder="رمز عبور" required>
-        <input name="limit_gb" type="number" min="0" step="0.1" placeholder="حجم GB" required>
-        <input name="days" type="number" min="1" placeholder="روز اعتبار" required>
-        <div class="checks">
-          <label><input type="checkbox" name="protocols" value="ssh" checked><span>SSH</span></label>
-          <label><input type="checkbox" name="protocols" value="xray" checked><span>Xray / VMess</span></label>
-        </div>
-        <button type="submit">ساخت کاربر</button>
+        <input name="password" placeholder="رمز جدید">
+        <input name="limit_gb" type="number" min="0" step="0.1" value="{{u.limit_gb}}">
+        <input name="remaining_days" type="number" min="0" placeholder="روز باقی‌مانده">
+        <button class="button primary">ذخیره</button>
       </form>
-    </article>
-
-    <article class="panel glass">
-      <h2>بازیابی بکاپ</h2>
-      <form action="/backup/restore" method="post" enctype="multipart/form-data" class="stack">
-        <input type="hidden" name="_csrf" value="{{csrf_token()}}">
-        <input type="file" name="backup_file" accept=".json,application/json" required>
-        <button type="submit">بازیابی</button>
-      </form>
-      <p class="muted">بکاپ شامل کاربران، UUID، حجم، مصرف Xray و زمان اعتبار است.</p>
-    </article>
-  </section>
-
-  <section class="panel glass">
-    <div class="table-head">
-      <h2>کاربران</h2>
-      <input id="search" placeholder="جستجو..." oninput="filterRows()">
-    </div>
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>کاربر</th><th>پروتکل‌ها</th><th>وضعیت</th><th>آنلاین</th>
-            <th>مصرف</th><th>اعتبار</th><th>عملیات</th>
-          </tr>
-        </thead>
-        <tbody id="userRows">
-        {% for u in users %}
-          <tr data-search="{{u.username|lower}}">
-            <td><strong>{{u.username}}</strong></td>
-            <td>
-              {% if u.ssh_enabled %}<span class="chip">SSH</span>{% endif %}
-              {% if u.xray_enabled %}<span class="chip purple">Xray</span>{% endif %}
-            </td>
-            <td>
-              {% if u.paused %}<span class="status paused">متوقف</span>
-              {% else %}<span class="status active">فعال</span>{% endif %}
-            </td>
-            <td>
-              {% if u.ssh_enabled %}
-                <span class="online-item" data-ssh-online="{{u.username}}">○ SSH</span>
-              {% endif %}
-              {% if u.xray_enabled %}
-                <span class="online-item" data-xray-online="{{u.username}}">○ Xray</span>
-              {% endif %}
-            </td>
-            <td>
-              <strong><span data-used="{{u.username}}">{{'%.3f'|format(u.xray_used_gb)}}</span> GB</strong>
-              <small class="muted">SSH: N/A</small>
-            </td>
-            <td>{{u.remaining_days}} روز</td>
-            <td class="actions">
-              {% if u.ssh_enabled %}<a class="mini" href="/users/{{u.username}}/ssh">SSH</a>{% endif %}
-              {% if u.xray_enabled %}<a class="mini purple" href="/users/{{u.username}}/xray">VMess</a>{% endif %}
-              {% if u.paused %}
-                <form action="/users/{{u.username}}/resume" method="post">
-                  <input type="hidden" name="_csrf" value="{{csrf_token()}}">
-                  <button class="mini green">فعال</button>
-                </form>
-              {% else %}
-                <form action="/users/{{u.username}}/pause" method="post">
-                  <input type="hidden" name="_csrf" value="{{csrf_token()}}">
-                  <button class="mini orange">توقف</button>
-                </form>
-              {% endif %}
-              <details>
-                <summary class="mini">ویرایش</summary>
-                <form action="/users/{{u.username}}/edit" method="post" class="popup-form">
-                  <input type="hidden" name="_csrf" value="{{csrf_token()}}">
-                  <input name="password" placeholder="رمز جدید؛ خالی بدون تغییر">
-                  <input name="limit_gb" type="number" min="0" step="0.1" value="{{u.limit_gb}}">
-                  <input name="remaining_days" type="number" min="0" placeholder="روز باقی‌مانده">
-                  <button>ذخیره</button>
-                </form>
-              </details>
-              <form action="/users/{{u.username}}/reset-traffic" method="post">
-                <input type="hidden" name="_csrf" value="{{csrf_token()}}">
-                <button class="mini ghost">ریست مصرف</button>
-              </form>
-              <form action="/users/{{u.username}}/delete" method="post" onsubmit="return confirm('حذف شود؟')">
-                <input type="hidden" name="_csrf" value="{{csrf_token()}}">
-                <button class="mini red">حذف</button>
-              </form>
-            </td>
-          </tr>
-        {% endfor %}
-        </tbody>
-      </table>
-    </div>
-  </section>
+    </details>
+    <form action="/users/{{u.username}}/reset-traffic" method="post"><input type="hidden" name="_csrf" value="{{csrf_token()}}"><button class="mini neutral">ریست</button></form>
+    <form action="/users/{{u.username}}/delete" method="post" onsubmit="return confirm('حذف شود؟')"><input type="hidden" name="_csrf" value="{{csrf_token()}}"><button class="mini danger">حذف</button></form>
+  </div></td>
+</tr>
+{% endfor %}
+</tbody></table></div>
+</section>
 </main>
 <script src="/static/app.js"></script>
-</body>
-</html>
+</body></html>

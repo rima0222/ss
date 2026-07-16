@@ -6,9 +6,8 @@ class Config:
     ADMIN_PASSWORD = os.getenv("CUSTOM_PANEL_ADMIN_PASSWORD", "change-me")
     DB_PATH = os.getenv("CUSTOM_PANEL_DB", "/etc/custom-panel/data/panel.db")
     SERVER_HOST = os.getenv("CUSTOM_PANEL_SERVER_HOST", "SERVER_IP")
-    XRAY_PORT = int(os.getenv("CUSTOM_PANEL_XRAY_PORT", "8443"))
-    XRAY_API = os.getenv("CUSTOM_PANEL_XRAY_API", "127.0.0.1:10085")
-    XRAY_CONFIG = os.getenv("CUSTOM_PANEL_XRAY_CONFIG", "/usr/local/etc/xray/config.json")
+    TLS_CERT = os.getenv("CUSTOM_PANEL_TLS_CERT", "/etc/custom-panel/tls/server.crt")
+    TLS_KEY = os.getenv("CUSTOM_PANEL_TLS_KEY", "/etc/custom-panel/tls/server.key")
     MAX_CONTENT_LENGTH = 16 * 1024 * 1024
     SESSION_COOKIE_HTTPONLY = True
     SESSION_COOKIE_SAMESITE = "Lax"
