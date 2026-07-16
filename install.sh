@@ -85,9 +85,6 @@ clean_previous_install() {
 
     systemctl disable --now custom-panel.service 2>/dev/null || true
     systemctl disable --now custom-panel-accounting.service 2>/dev/null || true
-    systemctl disable --now custom-panel-wg-restore.service 2>/dev/null || true
-    systemctl disable --now wg-quick@wg0.service 2>/dev/null || true
-    systemctl disable --now openvpn-server@server.service 2>/dev/null || true
 
     # Support service names used by different Ubuntu/strongSwan packages.
     for unit in strongswan.service strongswan-swanctl.service strongswan-starter.service charon-systemd.service; do
@@ -100,20 +97,15 @@ clean_previous_install() {
     echo "[*] Removing previous panel-owned files"
     rm -f /etc/systemd/system/custom-panel.service
     rm -f /etc/systemd/system/custom-panel-accounting.service
-    rm -f /etc/systemd/system/custom-panel-wg-restore.service
     rm -rf "${APP_DIR}"
 
     # Remove only configurations/interfaces created by this project.
-    rm -f /etc/wireguard/wg0.conf
-    rm -f /etc/openvpn/server/server.conf
-    rm -rf /etc/openvpn/server/easy-rsa
     rm -f /etc/swanctl/conf.d/custom-panel.conf
     rm -f /etc/swanctl/conf.d/custom-panel-users.conf
     rm -rf /etc/swanctl/x509/custom-panel
     rm -rf /etc/swanctl/x509ca/custom-panel
     rm -rf /etc/swanctl/private/custom-panel
 
-    ip link delete wg0 2>/dev/null || true
 
     # Remove firewall rules by exact match, if they were previously inserted.
     while iptables -C FORWARD -i wg0 -j ACCEPT 2>/dev/null; do
@@ -131,8 +123,6 @@ clean_previous_install() {
 
     # UFW rules are removed only for panel-specific ports.
     ufw --force delete allow 5000/tcp >/dev/null 2>&1 || true
-    ufw --force delete allow 51820/udp >/dev/null 2>&1 || true
-    ufw --force delete allow 1194/udp >/dev/null 2>&1 || true
     ufw --force delete allow 500/udp >/dev/null 2>&1 || true
     ufw --force delete allow 4500/udp >/dev/null 2>&1 || true
 
@@ -151,7 +141,7 @@ SERVER_HOST="${PANEL_SERVER_HOST:-$(curl -4fsS --max-time 10 https://api.ipify.o
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 apt-get install -y python3 python3-venv git curl ca-certificates openssh-server sqlite3 \
-  wireguard-tools openvpn easy-rsa qrencode ufw strongswan-swanctl strongswan-pki charon-systemd libcharon-extra-plugins
+  ufw strongswan-swanctl strongswan-pki charon-systemd libcharon-extra-plugins
 
 systemctl enable --now ssh
 
@@ -178,10 +168,6 @@ CUSTOM_PANEL_ADMIN_USERNAME=admin
 CUSTOM_PANEL_ADMIN_PASSWORD=$ADMIN_PASSWORD
 CUSTOM_PANEL_DB=$APP_DIR/data/panel.db
 CUSTOM_PANEL_SERVER_HOST=$SERVER_HOST
-CUSTOM_PANEL_WG_INTERFACE=wg0
-CUSTOM_PANEL_WG_PORT=51820
-CUSTOM_PANEL_WG_SUBNET=10.66.0.0/24
-CUSTOM_PANEL_OVPN_PORT=1194
 CUSTOM_PANEL_IKE_REMOTE_ID=$SERVER_HOST
 EOF
   printf 'Username: admin\nPassword: %s\n' "$ADMIN_PASSWORD" > "$APP_DIR/admin-credentials.txt"
@@ -194,100 +180,6 @@ net.ipv4.ip_forward=1
 net.ipv6.conf.all.forwarding=1
 EOF
 sysctl --system >/dev/null
-
-# WireGuard bootstrap
-if [[ ! -f /etc/wireguard/wg0.conf ]]; then
-  umask 077
-  WG_PRIV=$(wg genkey)
-  WG_PUB=$(printf '%s' "$WG_PRIV" | wg pubkey)
-  WAN_IF=$(ip route show default | awk '/default/ {print $5; exit}')
-  cat > /etc/wireguard/wg0.conf <<EOF
-[Interface]
-Address = 10.66.0.1/24
-ListenPort = 51820
-PrivateKey = $WG_PRIV
-SaveConfig = false
-PostUp = iptables -A FORWARD -i wg0 -j ACCEPT; iptables -A FORWARD -o wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o $WAN_IF -j MASQUERADE
-PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -D FORWARD -o wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -o $WAN_IF -j MASQUERADE
-EOF
-  printf '%s\n' "$WG_PUB" > /etc/wireguard/server.pub
-fi
-systemctl enable --now wg-quick@wg0
-
-# OpenVPN bootstrap
-OVPN=/etc/openvpn/server
-mkdir -p "$OVPN/easy-rsa" "$OVPN/clients"
-if [[ ! -f "$OVPN/ca.crt" ]]; then
-  cp -a /usr/share/easy-rsa/* "$OVPN/easy-rsa/"
-  pushd "$OVPN/easy-rsa" >/dev/null
-  ./easyrsa --batch init-pki
-  EASYRSA_REQ_CN='Custom Panel CA' ./easyrsa --batch build-ca nopass
-  EASYRSA_CERT_EXPIRE=3650 ./easyrsa --batch build-server-full server nopass
-  ./easyrsa --batch gen-dh
-  openvpn --genkey secret "$OVPN/tls-crypt.key"
-  cp pki/ca.crt pki/issued/server.crt pki/private/server.key pki/dh.pem "$OVPN/"
-  popd >/dev/null
-fi
-cat > "$OVPN/server.conf" <<EOF
-port 1194
-proto udp
-dev tun
-user nobody
-group nogroup
-persist-key
-persist-tun
-topology subnet
-server 10.67.0.0 255.255.255.0
-push "redirect-gateway def1 bypass-dhcp"
-push "dhcp-option DNS 1.1.1.1"
-ca $OVPN/ca.crt
-cert $OVPN/server.crt
-key $OVPN/server.key
-dh $OVPN/dh.pem
-tls-crypt $OVPN/tls-crypt.key
-auth SHA256
-cipher AES-256-GCM
-data-ciphers AES-256-GCM:CHACHA20-POLY1305
-keepalive 10 120
-status /run/openvpn-server/status.log 10
-status-version 3
-management 127.0.0.1 7505 $OVPN/management.pass
-script-security 2
-client-connect $OVPN/client-connect.sh
-verb 3
-explicit-exit-notify 1
-EOF
-cat > "$OVPN/client-connect.sh" <<'EOF'
-#!/usr/bin/env bash
-set -eu
-CN="${common_name:-}"
-[[ -n "$CN" ]] || exit 1
-[[ ! -f "/etc/openvpn/server/clients/${CN}.disabled" ]]
-EOF
-chmod 750 "$OVPN/client-connect.sh"
-if [[ ! -s "$OVPN/management.pass" ]]; then
-  python3 - <<'PY' > "$OVPN/management.pass"
-import secrets
-print(secrets.token_urlsafe(32))
-PY
-  chmod 600 "$OVPN/management.pass"
-fi
-
-# OpenVPN forwarding/NAT
-WAN_IF=$(ip route show default | awk '/default/ {print $5; exit}')
-iptables -t nat -C POSTROUTING -s 10.67.0.0/24 -o "$WAN_IF" -j MASQUERADE 2>/dev/null || \
-  iptables -t nat -A POSTROUTING -s 10.67.0.0/24 -o "$WAN_IF" -j MASQUERADE
-iptables -C FORWARD -i tun0 -j ACCEPT 2>/dev/null || iptables -A FORWARD -i tun0 -j ACCEPT
-iptables -C FORWARD -o tun0 -j ACCEPT 2>/dev/null || iptables -A FORWARD -o tun0 -j ACCEPT
-
-systemctl enable openvpn-server@server
-systemctl restart openvpn-server@server
-if ! systemctl is-active --quiet openvpn-server@server; then
-  echo "[!] OpenVPN failed to start."
-  journalctl -u openvpn-server@server -n 80 --no-pager || true
-  exit 1
-fi
-
 
 # IKEv2 / strongSwan bootstrap
 SWAN=/etc/swanctl
@@ -361,11 +253,8 @@ if ! systemctl is-active --quiet strongswan.service; then
 fi
 swanctl --load-all
 
-cat > /etc/systemd/system/custom-panel-wg-restore.service <<EOF
 [Unit]
 Description=Restore Custom Panel WireGuard peers
-After=wg-quick@wg0.service
-Requires=wg-quick@wg0.service
 
 [Service]
 Type=oneshot
@@ -379,7 +268,6 @@ EOF
 cat > /etc/systemd/system/custom-panel-accounting.service <<EOF
 [Unit]
 Description=Custom Panel traffic accounting
-After=network-online.target wg-quick@wg0.service
 
 [Service]
 Type=simple
@@ -400,7 +288,6 @@ EOF
 cat > /etc/systemd/system/custom-panel.service <<EOF
 [Unit]
 Description=Custom Panel
-After=network-online.target ssh.service wg-quick@wg0.service
 Wants=network-online.target
 
 [Service]
@@ -433,14 +320,10 @@ ufw route allow in on tun0 out on "$WAN_IF" >/dev/null 2>&1 || true
 
 ufw allow OpenSSH >/dev/null || true
 ufw allow 5000/tcp >/dev/null || true
-ufw allow 51820/udp >/dev/null || true
-ufw allow 1194/udp
 ufw allow 500/udp
 ufw allow 4500/udp >/dev/null || true
 ufw --force enable >/dev/null || true
 systemctl daemon-reload
-systemctl enable --now custom-panel-wg-restore.service
-systemctl restart custom-panel-wg-restore.service || true
 systemctl enable --now custom-panel-accounting
 systemctl restart custom-panel-accounting
 systemctl enable --now custom-panel

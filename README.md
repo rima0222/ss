@@ -1,20 +1,24 @@
-# Custom Panel v2.0 RC
+# Custom Panel v2.1 — SSH + IKEv2
 
-Supported protocols:
+This release intentionally supports only:
 
 - SSH
-- WireGuard
-- OpenVPN
 - IKEv2 / strongSwan
 
-## Important accounting behavior
+## Online status
 
-WireGuard, OpenVPN, and IKEv2 use their protocol-native counters and store
-independent cumulative totals in `protocol_usage`.
+- SSH: detected from active `sshd` sessions.
+- IKEv2: detected from active strongSwan IKE/CHILD SAs.
 
-SSH sessions are shown as online/offline, but no fabricated traffic number is
-stored. Exact per-user SSH tunnel accounting requires an eBPF/cgroup-based
-collector or per-user network namespaces, which is outside this release.
+## Traffic accounting
+
+- IKEv2: exact cumulative RX/TX from strongSwan CHILD_SA counters.
+- SSH: online status is exact, but traffic is shown as `N/A`.
+
+A trustworthy per-user SSH traffic counter requires an eBPF/cgroup collector or
+a separate network namespace for every SSH user. This release does not use the
+old `/proc/PID/net/dev` method because it can attribute namespace-wide traffic
+to the wrong user.
 
 ## Install
 
@@ -22,68 +26,24 @@ collector or per-user network namespaces, which is outside this release.
 curl -fsSL https://raw.githubusercontent.com/rima0222/ss/main/install.sh | sudo bash
 ```
 
-The installer performs a clean reinstall by default and stores an emergency
-backup under `/root/custom-panel-rescue-*`.
+## Credentials
 
-## IKEv2 client details
+```bash
+sudo bash /etc/custom-panel/show-credentials.sh
+```
 
-The downloaded IKEv2 text file shows:
+Reset to a random password:
 
-- Server
-- Remote ID
-- Username
-- Password
-- CA certificate download path
-
-For IP-based servers, the generated certificate includes the public IP as a SAN.
-A domain name with a publicly trusted certificate is still preferable for broad
-client compatibility.
+```bash
+sudo bash /etc/custom-panel/reset-admin-password.sh
+```
 
 ## Diagnostics
 
 ```bash
 sudo systemctl status custom-panel --no-pager
 sudo systemctl status custom-panel-accounting --no-pager
-sudo systemctl status wg-quick@wg0 --no-pager
-sudo systemctl status openvpn-server@server --no-pager
 sudo systemctl status strongswan --no-pager
-
-sudo journalctl -u custom-panel-accounting -n 100 --no-pager
-sudo wg show wg0 dump
 sudo swanctl --list-sas
+sudo journalctl -u custom-panel-accounting -n 100 --no-pager
 ```
-
-## Admin credentials
-
-Show the current panel username and password:
-
-```bash
-sudo bash /etc/custom-panel/show-credentials.sh
-```
-
-Equivalent command:
-
-```bash
-sudo cat /etc/custom-panel/admin-credentials.txt
-```
-
-Generate a new random admin password:
-
-```bash
-sudo bash /etc/custom-panel/reset-admin-password.sh
-```
-
-Set a specific password:
-
-```bash
-sudo bash /etc/custom-panel/reset-admin-password.sh 'NEW_STRONG_PASSWORD'
-```
-
-## Protocol selector
-
-The create-user form includes all four supported protocols:
-
-- SSH
-- WireGuard
-- OpenVPN
-- IKEv2

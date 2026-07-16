@@ -93,7 +93,7 @@ def add():
             raise ValueError("این نام کاربری قبلاً ثبت شده است.")
 
         protocols = list(dict.fromkeys(
-            p for p in request.form.getlist("protocols") if p in REGISTRY
+            p for p in request.form.getlist("protocols") if p in {"ssh","ikev2"}
         )) or ["ssh"]
 
         expire = (dt.date.today() + dt.timedelta(days=days)).isoformat()
