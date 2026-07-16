@@ -1,9 +1,7 @@
 import os
 from flask import Blueprint, jsonify
-
 from .auth import login_required
 from .db import connect
-from .users import list_users
 
 api_bp = Blueprint("api", __name__, url_prefix="/api")
 
@@ -17,35 +15,29 @@ def memory_percent():
 @api_bp.get("/stats")
 @login_required
 def stats():
-    users = list_users()
-    with connect() as c:
-        summary = c.execute("""
-        SELECT COUNT(*) total_users,
-               SUM(CASE WHEN paused=0 AND status='Active' THEN 1 ELSE 0 END) active_users,
-               COALESCE(SUM(limit_gb),0) total_limit_gb,
-               COALESCE(SUM(used_gb),0) total_used_gb
-        FROM users
-        """).fetchone()
-        online = c.execute("""
-        SELECT COUNT(DISTINCT user_id) n FROM protocol_usage WHERE online=1
-        """).fetchone()["n"]
-
+    with connect() as conn:
+        rows = [dict(row) for row in conn.execute("SELECT * FROM users ORDER BY id DESC")]
+    online = sum(1 for row in rows if row["ssh_online"] or row["xray_online"])
     return jsonify({
-        **dict(summary),
-        "online": online,
+        "total_users": len(rows),
+        "active_users": sum(1 for row in rows if not row["paused"]),
+        "online_users": online,
+        "total_limit_gb": round(sum(float(row["limit_gb"] or 0) for row in rows), 3),
+        "total_used_gb": round(sum(
+            (int(row["xray_rx_bytes"] or 0) + int(row["xray_tx_bytes"] or 0)) / (1024 ** 3)
+            for row in rows
+        ), 3),
         "memory_percent": memory_percent(),
         "load": round(os.getloadavg()[0], 2),
-        "user_usage": {
-            u["username"]: {
-                "total_gb": round(float(u.get("used_gb") or 0), 6),
-                "protocols": {
-                    p: {
-                        "gb": round((int(s.get("rx_bytes") or 0) + int(s.get("tx_bytes") or 0)) / (1024**3), 6),
-                        "online": bool(s.get("online")),
-                    }
-                    for p, s in u.get("protocol_usage", {}).items()
-                },
+        "users": {
+            row["username"]: {
+                "used_gb": round(
+                    (int(row["xray_rx_bytes"] or 0) + int(row["xray_tx_bytes"] or 0)) / (1024 ** 3),
+                    6,
+                ),
+                "ssh_online": bool(row["ssh_online"]),
+                "xray_online": bool(row["xray_online"]),
             }
-            for u in users
+            for row in rows
         },
     })

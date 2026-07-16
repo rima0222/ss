@@ -1,55 +1,39 @@
 function filterRows(){
   const q=document.getElementById('search').value.trim().toLowerCase();
-  document.querySelectorAll('#rows tr').forEach(r=>r.hidden=q&&!r.dataset.q.includes(q));
+  document.querySelectorAll('#userRows tr').forEach(row=>{
+    row.hidden=q && !row.dataset.search.includes(q);
+  });
 }
 
-
-async function stats(){
+async function refreshStats(){
   try{
-    const r=await fetch('/api/stats',{cache:'no-store'}),s=await r.json();
-    const values={
-      'st-users':s.users,
-      'st-online':s.online,
-      'st-active':s.active,
-      'st-quota':Number(s.quota).toFixed(1),
-      'st-used':Number(s.used).toFixed(2),
-      'st-ram':s.memory_percent+'%',
-      'st-load':s.load.one
-    };
-    for(const [id,v] of Object.entries(values)){
-      const el=document.getElementById(id); if(el) el.textContent=v;
+    const response=await fetch('/api/stats',{cache:'no-store'});
+    if(!response.ok) return;
+    const data=await response.json();
+
+    for(const key of ['total_users','active_users','online_users','total_limit_gb','total_used_gb','memory_percent']){
+      const el=document.getElementById(key);
+      if(el) el.textContent=data[key] ?? 0;
     }
-    for(const [name,item] of Object.entries(s.user_usage||{})){
-      const el=document.querySelector(`[data-used="${CSS.escape(name)}"]`);
-      if(el) el.textContent=Number(item.total_gb||0).toFixed(3);
-      const box=document.querySelector(`[data-usage-breakdown="${CSS.escape(name)}"]`);
-      if(box){
-        box.innerHTML=Object.entries(item.protocols||{}).map(([p,v])=>{
-          const val=p==='ssh'?'N/A':`${Number(v.gb||0).toFixed(3)} GB`;
-          const dot=v.online?'●':'○';
-          return `<small>${dot} ${p}: ${val}</small>`;
-        }).join('');
+
+    for(const [username,item] of Object.entries(data.users||{})){
+      const used=document.querySelector(`[data-used="${CSS.escape(username)}"]`);
+      if(used) used.textContent=Number(item.used_gb||0).toFixed(3);
+
+      const ssh=document.querySelector(`[data-ssh-online="${CSS.escape(username)}"]`);
+      if(ssh){
+        ssh.textContent=(item.ssh_online?'●':'○')+' SSH';
+        ssh.classList.toggle('is-online',Boolean(item.ssh_online));
+      }
+
+      const xray=document.querySelector(`[data-xray-online="${CSS.escape(username)}"]`);
+      if(xray){
+        xray.textContent=(item.xray_online?'●':'○')+' Xray';
+        xray.classList.toggle('is-online',Boolean(item.xray_online));
       }
     }
-  }catch(e){}
+  }catch(_){}
 }
 
-async function live(){
-  try{
-    const r=await fetch('/api/live',{cache:'no-store'}),data=await r.json();
-    for(const [name,s] of Object.entries(data.users||{})){
-      const state=document.querySelector(`[data-online="${CSS.escape(name)}"]`);
-      if(state){
-        state.textContent=s.online?'آنلاین':'آفلاین';
-        state.classList.toggle('online',!!s.online);
-        state.classList.toggle('offline',!s.online);
-        const onlineProtocols=Object.entries(s.protocols||{}).filter(([,v])=>v.online).map(([k])=>k);
-        state.title=onlineProtocols.length?`Online: ${onlineProtocols.join(', ')}`:'No active connection';
-      }
-    }
-  }catch(e){}
-}
-
-stats(); live();
-setInterval(stats,15000);
-setInterval(live,10000);
+refreshStats();
+setInterval(refreshStats,10000);

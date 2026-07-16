@@ -1,108 +1,122 @@
+import json
 import logging
+import subprocess
 import time
+from datetime import date
 
 from app.config import Config
 from app.db import connect, init_db
-from app.live import ikev2_counters, ssh_online
+from app.system_accounts import pause as pause_linux
 
 INTERVAL = 10
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("custom-panel-accounting")
 
-def mappings():
-    with connect() as c:
-        rows = c.execute("""
-        SELECT p.user_id,p.protocol,p.identifier,u.username,u.paused
-        FROM user_protocols p
-        JOIN users u ON u.id=p.user_id
-        WHERE p.enabled=1 AND p.protocol IN ('ssh','ikev2')
-        """).fetchall()
-    return [dict(r) for r in rows]
+def run(args):
+    return subprocess.run(
+        args,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=15,
+        check=False,
+    )
+
+def ssh_online_users():
+    result = run(["ps", "-eo", "user=,comm="])
+    users = set()
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[1] == "sshd":
+            if parts[0] not in {"root", "sshd", "nobody"}:
+                users.add(parts[0])
+    return users
+
+def xray_stats(reset=True):
+    args = [
+        "/usr/local/bin/xray", "api", "statsquery",
+        f"--server={Config.XRAY_API}",
+    ]
+    if reset:
+        args.append("-reset=true")
+    result = run(args)
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "xray stats query failed")
+    try:
+        payload = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return {
+        item.get("name"): int(item.get("value", 0))
+        for item in payload.get("stat", [])
+        if item.get("name")
+    }
 
 def tick():
     now = int(time.time())
-    ssh_users = ssh_online()
-    ike = ikev2_counters()
+    ssh_online = ssh_online_users()
+    stats = xray_stats(reset=True)
 
-    with connect() as c:
-        for item in mappings():
-            uid = item["user_id"]
-            protocol = item["protocol"]
-            username = item["username"]
-            identifier = item["identifier"] or username
+    with connect() as conn:
+        users = [dict(row) for row in conn.execute("SELECT * FROM users").fetchall()]
 
-            if protocol == "ssh":
-                online = int(username in ssh_users)
-                c.execute("""
-                INSERT INTO protocol_usage(user_id,protocol,online,last_seen,updated_at)
-                VALUES(?,?,?,?,CURRENT_TIMESTAMP)
-                ON CONFLICT(user_id,protocol) DO UPDATE SET
-                  online=excluded.online,
-                  last_seen=excluded.last_seen,
-                  updated_at=CURRENT_TIMESTAMP
-                """, (uid, "ssh", online, now if online else 0))
-                continue
+        for user in users:
+            ssh_state = int(user["username"] in ssh_online)
 
-            counter = ike.get(identifier)
-            if counter is None:
-                c.execute("""
-                INSERT INTO protocol_usage(user_id,protocol,online,updated_at)
-                VALUES(?,?,0,CURRENT_TIMESTAMP)
-                ON CONFLICT(user_id,protocol) DO UPDATE SET
-                  online=0,
-                  updated_at=CURRENT_TIMESTAMP
-                """, (uid, "ikev2"))
-                continue
+            up_name = f"user>>>{user['xray_email']}>>>traffic>>>uplink"
+            down_name = f"user>>>{user['xray_email']}>>>traffic>>>downlink"
+            online_name = f"user>>>{user['xray_email']}>>>online"
 
-            old = c.execute("""
-            SELECT last_rx_counter,last_tx_counter
-            FROM protocol_usage
-            WHERE user_id=? AND protocol='ikev2'
-            """, (uid,)).fetchone()
+            up = stats.get(up_name, 0) if user["xray_enabled"] else 0
+            down = stats.get(down_name, 0) if user["xray_enabled"] else 0
+            xray_online = int(stats.get(online_name, 0) > 0) if user["xray_enabled"] else 0
 
-            old_rx = int(old["last_rx_counter"]) if old else 0
-            old_tx = int(old["last_tx_counter"]) if old else 0
-            new_rx = max(0, int(counter.get("rx", 0)))
-            new_tx = max(0, int(counter.get("tx", 0)))
-
-            delta_rx = new_rx - old_rx if new_rx >= old_rx else new_rx
-            delta_tx = new_tx - old_tx if new_tx >= old_tx else new_tx
-
-            c.execute("""
-            INSERT INTO protocol_usage(
-              user_id,protocol,rx_bytes,tx_bytes,last_rx_counter,last_tx_counter,
-              online,last_seen,updated_at
-            ) VALUES(?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
-            ON CONFLICT(user_id,protocol) DO UPDATE SET
-              rx_bytes=protocol_usage.rx_bytes+excluded.rx_bytes,
-              tx_bytes=protocol_usage.tx_bytes+excluded.tx_bytes,
-              last_rx_counter=excluded.last_rx_counter,
-              last_tx_counter=excluded.last_tx_counter,
-              online=1,
-              last_seen=excluded.last_seen,
-              updated_at=CURRENT_TIMESTAMP
+            conn.execute("""
+            UPDATE users
+            SET ssh_online=?,
+                xray_online=?,
+                last_seen_ssh=CASE WHEN ?=1 THEN ? ELSE last_seen_ssh END,
+                last_seen_xray=CASE WHEN ?=1 THEN ? ELSE last_seen_xray END,
+                xray_rx_bytes=xray_rx_bytes+?,
+                xray_tx_bytes=xray_tx_bytes+?,
+                updated_at=CURRENT_TIMESTAMP
+            WHERE id=?
             """, (
-                uid, "ikev2",
-                max(0, delta_rx), max(0, delta_tx),
-                new_rx, new_tx,
-                1, int(counter.get("seen") or now),
+                ssh_state, xray_online,
+                ssh_state, now,
+                xray_online, now,
+                down, up, user["id"],
             ))
 
-        # Only IKEv2 contributes exact bytes. SSH is intentionally excluded.
-        c.execute("""
-        UPDATE users
-        SET used_gb = COALESCE((
-          SELECT SUM(rx_bytes + tx_bytes) / 1073741824.0
-          FROM protocol_usage pu
-          WHERE pu.user_id=users.id AND pu.protocol='ikev2'
-        ), 0),
-        updated_at=CURRENT_TIMESTAMP
-        """)
-        c.commit()
+            used_gb = (
+                int(user["xray_rx_bytes"] or 0)
+                + int(user["xray_tx_bytes"] or 0)
+                + down + up
+            ) / (1024 ** 3)
+
+            expired = False
+            try:
+                expired = date.fromisoformat(user["expire_date"]) < date.today()
+            except Exception:
+                pass
+
+            over_quota = float(user["limit_gb"] or 0) > 0 and used_gb >= float(user["limit_gb"])
+            if not user["paused"] and (expired or over_quota):
+                if user["ssh_enabled"]:
+                    try:
+                        pause_linux(user["username"])
+                    except Exception:
+                        log.exception("Could not pause SSH user %s", user["username"])
+                conn.execute("""
+                UPDATE users SET paused=1,status='Expired',updated_at=CURRENT_TIMESTAMP
+                WHERE id=?
+                """, (user["id"],))
+
+        conn.commit()
 
 def main():
     init_db(Config.DB_PATH)
-    log.info("SSH/IKEv2 accounting worker started; interval=%ss", INTERVAL)
+    log.info("Accounting worker started")
     while True:
         try:
             tick()

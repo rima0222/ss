@@ -1,77 +1,37 @@
 import datetime as dt
-import json
+import uuid
 from io import BytesIO
 
-from flask import Blueprint, current_app, flash, redirect, render_template, request, send_file, url_for
+from flask import Blueprint, flash, redirect, render_template, request, send_file, url_for
 
 from .auth import login_required
 from .db import connect
-from .protocols import REGISTRY
 from .security import validate_csrf
+from .system_accounts import create_or_update, delete as delete_linux, pause as pause_linux, resume as resume_linux
+from .xray_manager import regenerate, vmess_uri
 
 users_bp = Blueprint("users", __name__)
 
-def list_users():
-    today = dt.date.today()
-    with connect() as c:
-        rows = c.execute("""
-        SELECT u.*,
-               GROUP_CONCAT(CASE WHEN p.enabled=1 THEN p.protocol END) AS protocols
-        FROM users u
-        LEFT JOIN user_protocols p ON p.user_id=u.id
-        GROUP BY u.id
-        ORDER BY u.id DESC
-        """).fetchall()
-        usage = {
-            (r["user_id"], r["protocol"]): dict(r)
-            for r in c.execute("SELECT * FROM protocol_usage").fetchall()
-        }
-
-    result = []
-    for row in rows:
-        item = dict(row)
-        try:
-            item["remaining_days"] = max(0, (dt.date.fromisoformat(item["expire_date"]) - today).days)
-        except Exception:
-            item["remaining_days"] = 0
-        item["protocol_usage"] = {
-            p: usage.get((item["id"], p), {})
-            for p in (item.get("protocols") or "").split(",") if p
-        }
-        result.append(item)
-    return result
-
-def get_user(name):
-    with connect() as c:
-        row = c.execute("SELECT * FROM users WHERE username=?", (name,)).fetchone()
+def get_user(username):
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
     return dict(row) if row else None
 
-def protocol_meta(uid, protocol=None):
-    with connect() as c:
-        if protocol:
-            row = c.execute(
-                "SELECT * FROM user_protocols WHERE user_id=? AND protocol=? AND enabled=1",
-                (uid, protocol),
-            ).fetchone()
-            rows = [row] if row else []
-        else:
-            rows = c.execute(
-                "SELECT * FROM user_protocols WHERE user_id=? AND enabled=1",
-                (uid,),
-            ).fetchall()
-    result = {}
-    for row in rows:
-        if not row:
-            continue
+def list_users():
+    today = dt.date.today()
+    with connect() as conn:
+        rows = [dict(row) for row in conn.execute("SELECT * FROM users ORDER BY id DESC")]
+    for user in rows:
         try:
-            cfg = json.loads(row["config_json"] or "{}")
+            user["remaining_days"] = max(
+                0, (dt.date.fromisoformat(user["expire_date"]) - today).days
+            )
         except Exception:
-            cfg = {}
-        result[row["protocol"]] = {
-            "identifier": row["identifier"],
-            "config": cfg,
-        }
-    return result
+            user["remaining_days"] = 0
+        user["xray_used_gb"] = (
+            int(user["xray_rx_bytes"] or 0) + int(user["xray_tx_bytes"] or 0)
+        ) / (1024 ** 3)
+    return rows
 
 @users_bp.get("/")
 @login_required
@@ -80,153 +40,163 @@ def index():
 
 @users_bp.post("/users")
 @login_required
-def add():
+def add_user():
     validate_csrf()
-    created = []
     try:
-        name = request.form["username"].strip()
+        username = request.form["username"].strip()
         password = request.form["password"]
-        limit = float(request.form["limit_gb"])
+        limit_gb = float(request.form["limit_gb"])
         days = int(request.form["days"])
-        if get_user(name):
-            raise ValueError("این نام کاربری قبلاً ثبت شده است.")
+        ssh_enabled = int("ssh" in request.form.getlist("protocols"))
+        xray_enabled = int("xray" in request.form.getlist("protocols"))
+        if not ssh_enabled and not xray_enabled:
+            raise ValueError("حداقل یک پروتکل را انتخاب کن.")
+        if get_user(username):
+            raise ValueError("این نام کاربری قبلاً وجود دارد.")
 
-        protocols = list(dict.fromkeys(
-            p for p in request.form.getlist("protocols") if p in {"ssh","ikev2"}
-        )) or ["ssh"]
-
+        xray_uuid = str(uuid.uuid4()) if xray_enabled else None
+        xray_email = f"{username}@panel.local" if xray_enabled else None
         expire = (dt.date.today() + dt.timedelta(days=days)).isoformat()
-        user = {
-            "username": name,
-            "password": password,
-            "limit_gb": limit,
-            "used_gb": 0,
-            "expire_date": expire,
-            "status": "Active",
-            "paused": 0,
-            "initial_gb": limit,
-            "initial_days": days,
-        }
 
-        metadata = {}
-        for protocol in protocols:
-            metadata[protocol] = REGISTRY[protocol].create(user)
-            created.append(protocol)
+        if ssh_enabled:
+            create_or_update(username, password)
 
-        with connect() as c:
-            cur = c.execute("""
-            INSERT INTO users(username,password,limit_gb,expire_date,initial_gb,initial_days)
-            VALUES(?,?,?,?,?,?)
-            """, (name, password, limit, expire, limit, days))
-            uid = cur.lastrowid
-            for protocol in protocols:
-                meta = metadata[protocol]
-                c.execute("""
-                INSERT INTO user_protocols(user_id,protocol,enabled,identifier,config_json)
-                VALUES(?,?,1,?,?)
-                """, (uid, protocol, meta.get("identifier"), json.dumps(meta.get("config") or {})))
-                c.execute("""
-                INSERT OR IGNORE INTO protocol_usage(user_id,protocol)
-                VALUES(?,?)
-                """, (uid, protocol))
-            c.commit()
+        with connect() as conn:
+            conn.execute("""
+            INSERT INTO users(
+              username,password,limit_gb,expire_date,ssh_enabled,xray_enabled,
+              xray_uuid,xray_email
+            ) VALUES(?,?,?,?,?,?,?,?)
+            """, (
+                username, password, limit_gb, expire, ssh_enabled, xray_enabled,
+                xray_uuid, xray_email,
+            ))
+            conn.commit()
 
-        flash("کاربر با موفقیت ساخته شد.", "success")
+        if xray_enabled:
+            regenerate()
+
+        flash("کاربر ساخته شد.", "success")
     except Exception as exc:
-        for protocol in reversed(created):
-            try:
-                REGISTRY[protocol].delete({"username": request.form.get("username", "")})
-            except Exception:
-                pass
         flash(f"خطا: {exc}", "error")
     return redirect(url_for("users.index"))
 
-@users_bp.post("/users/<name>/edit")
+@users_bp.post("/users/<username>/edit")
 @login_required
-def edit(name):
+def edit_user(username):
     validate_csrf()
-    user = get_user(name)
+    user = get_user(username)
     if not user:
         return redirect(url_for("users.index"))
+
     try:
         password = request.form.get("password") or user["password"]
-        limit = float(request.form.get("limit_gb", user["limit_gb"]))
-        used = float(request.form.get("used_gb", user["used_gb"]))
+        limit_gb = float(request.form.get("limit_gb", user["limit_gb"]))
         remaining = request.form.get("remaining_days")
-        expire = (
-            (dt.date.today() + dt.timedelta(days=int(remaining))).isoformat()
-            if remaining not in (None, "")
-            else user["expire_date"]
-        )
-        updated = {**user, "password": password, "limit_gb": limit, "used_gb": used, "expire_date": expire}
-        metas = protocol_meta(user["id"])
-        for protocol, meta in metas.items():
-            REGISTRY[protocol].update(updated, meta)
+        expire = user["expire_date"]
+        if remaining not in (None, ""):
+            expire = (dt.date.today() + dt.timedelta(days=int(remaining))).isoformat()
 
-        with connect() as c:
-            c.execute("""
-            UPDATE users SET password=?,limit_gb=?,used_gb=?,expire_date=?,updated_at=CURRENT_TIMESTAMP
+        if user["ssh_enabled"]:
+            create_or_update(username, password)
+
+        with connect() as conn:
+            conn.execute("""
+            UPDATE users
+            SET password=?,limit_gb=?,expire_date=?,updated_at=CURRENT_TIMESTAMP
             WHERE username=?
-            """, (password, limit, used, expire, name))
-            c.commit()
+            """, (password, limit_gb, expire, username))
+            conn.commit()
+
         flash("ویرایش ذخیره شد.", "success")
     except Exception as exc:
         flash(f"خطا: {exc}", "error")
     return redirect(url_for("users.index"))
 
-@users_bp.post("/users/<name>/<action>")
+@users_bp.post("/users/<username>/<action>")
 @login_required
-def state(name, action):
+def user_action(username, action):
     validate_csrf()
-    user = get_user(name)
+    user = get_user(username)
+    if not user:
+        return redirect(url_for("users.index"))
+
     try:
-        if not user:
-            raise ValueError("کاربر پیدا نشد.")
-        metas = protocol_meta(user["id"])
-        if action in ("pause", "resume"):
-            for protocol, meta in metas.items():
-                getattr(REGISTRY[protocol], action)(user, meta)
-            paused = int(action == "pause")
-            with connect() as c:
-                c.execute(
-                    "UPDATE users SET paused=?,status=?,updated_at=CURRENT_TIMESTAMP WHERE username=?",
-                    (paused, "Paused" if paused else "Active", name),
-                )
-                c.commit()
+        if action == "pause":
+            if user["ssh_enabled"]:
+                pause_linux(username)
+            with connect() as conn:
+                conn.execute("""
+                UPDATE users SET paused=1,status='Paused',updated_at=CURRENT_TIMESTAMP
+                WHERE username=?
+                """, (username,))
+                conn.commit()
+            if user["xray_enabled"]:
+                regenerate()
+
+        elif action == "resume":
+            if user["ssh_enabled"]:
+                resume_linux(username)
+            with connect() as conn:
+                conn.execute("""
+                UPDATE users SET paused=0,status='Active',updated_at=CURRENT_TIMESTAMP
+                WHERE username=?
+                """, (username,))
+                conn.commit()
+            if user["xray_enabled"]:
+                regenerate()
+
+        elif action == "reset-traffic":
+            with connect() as conn:
+                conn.execute("""
+                UPDATE users SET xray_rx_bytes=0,xray_tx_bytes=0,updated_at=CURRENT_TIMESTAMP
+                WHERE username=?
+                """, (username,))
+                conn.commit()
+
         elif action == "delete":
-            for protocol, meta in metas.items():
-                REGISTRY[protocol].delete(user, meta)
-            with connect() as c:
-                c.execute("DELETE FROM users WHERE username=?", (name,))
-                c.commit()
+            if user["ssh_enabled"]:
+                delete_linux(username)
+            with connect() as conn:
+                conn.execute("DELETE FROM users WHERE username=?", (username,))
+                conn.commit()
+            if user["xray_enabled"]:
+                regenerate()
+
         flash("عملیات انجام شد.", "success")
     except Exception as exc:
         flash(f"خطا: {exc}", "error")
     return redirect(url_for("users.index"))
 
-@users_bp.get("/users/<name>/config/<protocol>")
+@users_bp.get("/users/<username>/xray")
 @login_required
-def config(name, protocol):
-    user = get_user(name)
-    if not user or protocol not in REGISTRY:
+def xray_config(username):
+    user = get_user(username)
+    if not user or not user["xray_enabled"]:
         return ("Not found", 404)
-    meta = protocol_meta(user["id"], protocol).get(protocol)
-    if not meta:
-        return ("Not enabled", 404)
-    item = REGISTRY[protocol].client(user, meta)
+    content = vmess_uri(user) + "\n"
     return send_file(
-        BytesIO(item["content"].encode()),
+        BytesIO(content.encode()),
         as_attachment=True,
-        download_name=item["filename"],
+        download_name=f"{username}-vmess.txt",
         mimetype="text/plain",
     )
 
-@users_bp.get("/users/<name>/config/ikev2-ca")
+@users_bp.get("/users/<username>/ssh")
 @login_required
-def ike_ca(name):
-    user = get_user(name)
-    if not user or "ikev2" not in protocol_meta(user["id"]):
-        return ("Not enabled", 404)
-    path = "/etc/swanctl/x509ca/custom-panel-ca.crt"
-    return send_file(path, as_attachment=True, download_name="custom-panel-ca.crt")
-
+def ssh_config(username):
+    user = get_user(username)
+    if not user or not user["ssh_enabled"]:
+        return ("Not found", 404)
+    content = (
+        f"Server: {request.host.split(':')[0]}\n"
+        f"Port: 22\n"
+        f"Username: {user['username']}\n"
+        f"Password: {user['password']}\n"
+    )
+    return send_file(
+        BytesIO(content.encode()),
+        as_attachment=True,
+        download_name=f"{username}-ssh.txt",
+        mimetype="text/plain",
+    )
