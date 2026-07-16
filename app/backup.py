@@ -6,8 +6,9 @@ from io import BytesIO
 from flask import Blueprint, flash, redirect, request, send_file, url_for
 
 from .auth import login_required
+from .crypto import decrypt, encrypt
 from .db import connect
-from .linux_users import create_or_update
+from .helper_client import request_helper
 from .security import validate_csrf
 
 backup_bp = Blueprint("backup", __name__, url_prefix="/backup")
@@ -15,10 +16,16 @@ backup_bp = Blueprint("backup", __name__, url_prefix="/backup")
 @backup_bp.get("/download")
 @login_required
 def download():
-    with connect() as c:
-        users = [dict(r) for r in c.execute("SELECT * FROM users ORDER BY id")]
+    with connect() as conn:
+        rows = [dict(row) for row in conn.execute("SELECT * FROM users ORDER BY id")]
+    users = []
+    for row in rows:
+        item = dict(row)
+        item["password"] = decrypt(item.pop("password_enc"))
+        users.append(item)
+
     payload = {
-        "format": "custom-panel-optimized-ssh",
+        "format": "custom-panel-v7",
         "version": 1,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "users": users,
@@ -44,16 +51,16 @@ def restore():
         if not isinstance(users, list):
             raise ValueError("ساختار بکاپ معتبر نیست.")
 
-        with connect() as c:
+        with connect() as conn:
             for user in users:
-                create_or_update(user["username"], user["password"])
-                c.execute("""
+                request_helper("upsert", user["username"], user["password"])
+                conn.execute("""
                 INSERT INTO users(
-                  id,username,password,port,limit_bytes,remaining_days,
+                  id,username,password_enc,port,limit_bytes,remaining_days,
                   paused,status,rx_bytes,tx_bytes,online,last_seen
                 ) VALUES(?,?,?,?,?,?,?,?,?,?,0,?)
                 ON CONFLICT(username) DO UPDATE SET
-                  password=excluded.password,
+                  password_enc=excluded.password_enc,
                   port=excluded.port,
                   limit_bytes=excluded.limit_bytes,
                   remaining_days=excluded.remaining_days,
@@ -64,13 +71,19 @@ def restore():
                   online=0,
                   last_seen=excluded.last_seen
                 """, (
-                    user.get("id"), user["username"], user["password"],
-                    user["port"], user.get("limit_bytes", 0),
-                    user.get("remaining_days", 0), user.get("paused", 0),
-                    user.get("status", "Active"), user.get("rx_bytes", 0),
-                    user.get("tx_bytes", 0), user.get("last_seen", 0),
+                    user.get("id"),
+                    user["username"],
+                    encrypt(user["password"]),
+                    user["port"],
+                    user.get("limit_bytes", 0),
+                    user.get("remaining_days", 0),
+                    user.get("paused", 0),
+                    user.get("status", "Active"),
+                    user.get("rx_bytes", 0),
+                    user.get("tx_bytes", 0),
+                    user.get("last_seen", 0),
                 ))
-            c.commit()
+            conn.commit()
 
         subprocess.run(["systemctl", "restart", "custom-panel-proxy"], check=False)
         flash("بکاپ بازیابی شد.", "success")

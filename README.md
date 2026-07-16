@@ -1,4 +1,23 @@
-# Custom Panel v6 — Optimized SSH
+# Custom Panel v7 — Secure Optimized SSH
+
+OpenSSH-only panel designed for a small VPS and many mostly-idle users.
+
+## Architecture
+
+- Web panel runs as an unprivileged `custompanel` user.
+- Linux account changes are performed by a minimal root helper over a protected Unix socket.
+- Traffic proxy runs as the unprivileged `panelproxy` user.
+- One asyncio process handles all per-user ports.
+- Traffic is batched to SQLite every three seconds.
+- User passwords are encrypted at rest with Fernet.
+- Admin password is stored as a secure Werkzeug hash.
+- Login attempts are rate limited.
+- Remaining days use a persistent daily rollover, so service restarts do not reset the timer.
+
+## Accurate traffic
+
+Each user receives a dedicated port between 20000 and 29999. Every byte passing
+through that endpoint is counted before forwarding to internal OpenSSH.
 
 ## Install
 
@@ -8,69 +27,20 @@ bash -n /tmp/install.sh
 sudo bash /tmp/install.sh
 ```
 
----
-
-## Show current admin username/password
+## Credentials
 
 ```bash
 sudo bash /etc/custom-panel/show-credentials.sh
 ```
 
-or
+## Services
 
 ```bash
-sudo cat /etc/custom-panel/admin-credentials.txt
-```
-
----
-
-## Generate a new random admin password
-
-```bash
-sudo bash /etc/custom-panel/reset-admin-password.sh
-```
-
----
-
-## Set a custom admin password
-
-```bash
-sudo bash /etc/custom-panel/reset-admin-password.sh 'NEW_STRONG_PASSWORD'
-```
-
----
-
-## Restart services
-
-```bash
-sudo systemctl restart custom-panel
-sudo systemctl restart custom-panel-proxy
-sudo systemctl restart custom-panel-accounting
-```
-
----
-
-## Check services
-
-```bash
-sudo systemctl status custom-panel
+sudo systemctl status custom-panel-helper
 sudo systemctl status custom-panel-proxy
 sudo systemctl status custom-panel-accounting
-sudo systemctl status ssh
+sudo systemctl status custom-panel
 ```
 
----
-
-## Backup
-
-From the web panel:
-- Backup
-- Restore
-
-All users, ports, passwords, traffic, remaining days and settings are preserved.
-
----
-
-Supported protocol:
-
-- OpenSSH only
+Static syntax validation was performed, but real connection/load testing must be
+done on the target VPS.

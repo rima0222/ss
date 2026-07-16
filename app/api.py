@@ -16,8 +16,8 @@ def memory_percent():
 @api_bp.get("/stats")
 @login_required
 def stats():
-    with connect() as c:
-        users = [dict(r) for r in c.execute("SELECT * FROM users ORDER BY id DESC")]
+    with connect() as conn:
+        users = [dict(row) for row in conn.execute("SELECT * FROM users ORDER BY id DESC")]
     total_used = sum(int(u["rx_bytes"] or 0) + int(u["tx_bytes"] or 0) for u in users)
     return jsonify({
         "total_users": len(users),

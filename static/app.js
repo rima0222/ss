@@ -1,6 +1,8 @@
 function filterRows(){
  const q=document.getElementById('search').value.trim().toLowerCase();
- document.querySelectorAll('#rows tr').forEach(r=>r.hidden=q&&!r.dataset.search.includes(q));
+ document.querySelectorAll('#rows tr').forEach(row=>{
+  row.hidden=q&&!row.dataset.search.includes(q);
+ });
 }
 async function refreshStats(){
  try{
@@ -14,7 +16,10 @@ async function refreshStats(){
    const used=document.querySelector(`[data-used="${CSS.escape(name)}"]`);
    if(used)used.textContent=item.used;
    const online=document.querySelector(`[data-online="${CSS.escape(name)}"]`);
-   if(online){online.textContent=item.online?'● Online':'○ Offline';online.classList.toggle('active',item.online);}
+   if(online){
+    online.textContent=item.online?'● Online':'○ Offline';
+    online.classList.toggle('active',item.online);
+   }
    const days=document.querySelector(`[data-days="${CSS.escape(name)}"]`);
    if(days)days.textContent=`${item.remaining_days} روز`;
    const progress=document.querySelector(`[data-progress="${CSS.escape(name)}"]`);
