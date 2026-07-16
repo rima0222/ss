@@ -10,15 +10,22 @@ async function refreshStats(){
   for(const key of ['total_users','active_users','online_users','total_limit_gb','total_used','memory_percent']){
    const el=document.getElementById(key);if(el)el.textContent=data[key]??0;
   }
+  const gateway=document.getElementById('gateway_status');
+  if(gateway){
+   gateway.textContent=data.gateway_live
+    ? `Gateway آنلاین — Snapshot ${data.snapshot_age??0} ثانیه قبل`
+    : 'Gateway یا Snapshot زنده در دسترس نیست';
+   gateway.classList.toggle('active',Boolean(data.gateway_live));
+  }
   for(const [name,item] of Object.entries(data.users||{})){
    const used=document.querySelector(`[data-used="${CSS.escape(name)}"]`);
    if(used)used.textContent=item.used;
    const quota=document.querySelector(`[data-quota="${CSS.escape(name)}"]`);
    if(quota)quota.textContent=item.quota;
    const tcp=document.querySelector(`[data-online-tcp="${CSS.escape(name)}"]`);
-   if(tcp){tcp.textContent=item.online_tcp?'● TCP':'○ TCP';tcp.classList.toggle('active',item.online_tcp);}
+   if(tcp){tcp.textContent=item.online_tcp?`● TCP (${item.tcp_sessions})`:'○ TCP (0)';tcp.classList.toggle('active',item.online_tcp);}
    const ws=document.querySelector(`[data-online-ws="${CSS.escape(name)}"]`);
-   if(ws){ws.textContent=item.online_ws?'● WS':'○ WS';ws.classList.toggle('active',item.online_ws);}
+   if(ws){ws.textContent=item.online_ws?`● WS (${item.ws_sessions})`:'○ WS (0)';ws.classList.toggle('active',item.online_ws);}
    const days=document.querySelector(`[data-days="${CSS.escape(name)}"]`);
    if(days)days.textContent=`${item.remaining_days} روز`;
    const progress=document.querySelector(`[data-progress="${CSS.escape(name)}"]`);

@@ -20,13 +20,14 @@ backup_old(){
 
 if [[ "$CLEAN" == "1" ]]; then
   systemctl disable --now custom-panel custom-panel-proxy custom-panel-accounting custom-panel-helper custom-panel-sshd 2>/dev/null || true
-  backup_old
+  echo "[*] Clean installation: removing previous panel data and configuration"
   rm -f /etc/systemd/system/custom-panel.service
   rm -f /etc/systemd/system/custom-panel-proxy.service
   rm -f /etc/systemd/system/custom-panel-accounting.service
   rm -f /etc/systemd/system/custom-panel-helper.service
   rm -f /etc/systemd/system/custom-panel-sshd.service
-  rm -rf "$APP"
+  rm -rf "$APP" /run/custom-panel
+  rm -f /etc/tmpfiles.d/custom-panel.conf
   systemctl daemon-reload
 fi
 
@@ -165,6 +166,7 @@ CUSTOM_PANEL_WS_PORT_START=25000
 CUSTOM_PANEL_WS_PORT_END=29999
 CUSTOM_PANEL_HELPER_SOCKET=/run/custom-panel/helper.sock
 CUSTOM_PANEL_LIVE_PATH=/run/custom-panel/live.json
+CUSTOM_PANEL_EVENT_SOCKET=/run/custom-panel/events.sock
 EOF
 cat > "$APP/admin-credentials.txt" <<EOF
 Username: admin
@@ -300,6 +302,7 @@ runuser -u custompanel -- env \
   CUSTOM_PANEL_WS_PORT_END="29999" \
   CUSTOM_PANEL_HELPER_SOCKET="/run/custom-panel/helper.sock" \
   CUSTOM_PANEL_LIVE_PATH="/run/custom-panel/live.json" \
+  CUSTOM_PANEL_EVENT_SOCKET="/run/custom-panel/events.sock" \
   "$APP/venv/bin/python" - <<'PY'
 from app.db import init_db, connect
 from app.config import Config
@@ -356,6 +359,19 @@ for service in ssh custom-panel-sshd custom-panel-helper custom-panel-proxy cust
 done
 
 curl -fsS --max-time 10 http://127.0.0.1:5000/login >/dev/null
+
+python3 - <<'PY'
+import json, time
+path="/run/custom-panel/live.json"
+data=json.load(open(path))
+age=int(time.time())-int(data.get("updated_at",0))
+if age > 3:
+    raise SystemExit(f"Gateway snapshot is stale: {age}s")
+print("Gateway snapshot: OK")
+PY
+
+runuser -u custompanel -- sqlite3 "$APP/data/panel.db"   "CREATE TABLE IF NOT EXISTS final_write_test(id INTEGER PRIMARY KEY); INSERT OR REPLACE INTO final_write_test(id) VALUES(1); DROP TABLE final_write_test;"
+
 runuser -u custompanel -- env PYTHONPATH="$APP" \
   CUSTOM_PANEL_SECRET_KEY="$SECRET" \
   CUSTOM_PANEL_ADMIN_USERNAME="admin" \
@@ -370,6 +386,7 @@ runuser -u custompanel -- env PYTHONPATH="$APP" \
   CUSTOM_PANEL_WS_PORT_END="29999" \
   CUSTOM_PANEL_HELPER_SOCKET="/run/custom-panel/helper.sock" \
   CUSTOM_PANEL_LIVE_PATH="/run/custom-panel/live.json" \
+  CUSTOM_PANEL_EVENT_SOCKET="/run/custom-panel/events.sock" \
   "$APP/venv/bin/python" -c "from app.db import init_db,connect; from app.config import Config; init_db(Config.DB_PATH); c=connect().__enter__(); c.execute('PRAGMA wal_checkpoint(PASSIVE)'); c.close()"
 ss -lnt | grep -qE '[:.]5000[[:space:]]'
 

@@ -1,45 +1,83 @@
-# Custom Panel v13 — Enforced SSH Gateway
+# Custom Panel v14 — Engineered Session Gateway
 
-v13 changes the architecture so managed users cannot bypass accounting.
+v14 replaces the old online/traffic subsystem while preserving the existing
+panel features.
 
-## Architecture
+## New accounting design
+
+The Gateway owns an in-memory session registry:
 
 ```text
-OpenSSH TCP ports 20000-24999 ─┐
-                               ├─> Async Gateway ─> OpenSSH 127.0.0.1:2222
-WebSocket ports 25000-29999 ───┘
-
-Server administration remains on normal SSH port 22.
+Session ID
+User
+Endpoint type
+Start time
+Last activity
+RX
+TX
 ```
 
-Managed users are accepted only by the internal OpenSSH instance on localhost.
-They must connect through their assigned TCP or WebSocket endpoint.
+A user is online only while at least one Gateway session is open.
 
-## Why this is more reliable
+The Gateway writes:
 
-- Every managed byte crosses the gateway.
-- Online state is the gateway's active connection count.
-- A live atomic snapshot is updated every 0.5 seconds.
-- SQLite persistence is batched every 2 seconds.
-- The dashboard overlays pending bytes on stored totals.
-- The dashboard displays `used / quota`.
-- OpenSSH and WebSocket use separate listeners and cannot bind the same port.
-- Direct port-22 access does not accept managed panel users through the internal
-  panel SSH configuration.
+- An atomic live snapshot every 0.5 seconds.
+- Persistent traffic totals to SQLite every 3 seconds.
+- Failed SQLite writes are retried and unsaved byte deltas are restored to
+  memory instead of being lost.
 
-## Features
+The dashboard reads live session state and overlays unflushed bytes on the saved
+database total.
 
-- OpenSSH TCP and SSH WebSocket
-- Add, edit, pause, resume and delete
-- Change password, quota, remaining days and enabled methods
-- Separate TCP/WS online state
-- Accurate combined RX/TX
-- Automatic quota and time suspension
+## Connection architecture
+
+```text
+OpenSSH TCP 20000-24999 ─┐
+                         ├─> Session Gateway ─> OpenSSH 127.0.0.1:2222
+WebSocket 25000-29999 ───┘
+```
+
+The internal OpenSSH service is localhost-only. Managed users must use their
+assigned TCP port or WebSocket URL.
+
+## Preserved panel features
+
+- Add, edit and delete users
+- Pause and resume
+- Change user password
+- Change quota and remaining days
+- Select TCP, WebSocket or both
+- Reset traffic
 - Backup and restore
-- Change panel administrator username/password from the panel
-- Encrypted user passwords and hashed administrator password
-- One asyncio gateway process
+- Download connection details
+- Change panel administrator username and password from the panel
+- Encrypted user passwords
+- Hashed administrator password
+- Dark responsive interface
+
+## Fresh installation behavior
+
+A normal v14 installation is clean:
+
+- Previous panel services are stopped.
+- `/etc/custom-panel` is removed.
+- Previous panel database and administrator settings are removed.
+- A new database and random initial administrator password are created.
+- Old users return only when the administrator explicitly restores a backup.
+
+## Resource model
+
+- One asyncio Gateway process
 - One Gunicorn worker
+- One accounting worker
+- No per-user processes
+- WebSocket compression disabled
+- 128 KiB relay buffers
+- SQLite WAL with batched writes
+
+Lower network latency mostly depends on server location, routing and congestion.
+The Gateway avoids deliberate delays, but software cannot reduce the physical
+network RTT below the route latency.
 
 ## Install
 
@@ -61,11 +99,5 @@ sudo bash /etc/custom-panel/show-credentials.sh
 sudo bash /etc/custom-panel/diagnose.sh
 ```
 
-## Important client rule
-
-Use the TCP port or WebSocket URL downloaded from the user's Config button.
-Connecting to server port 22 bypasses the user's assigned gateway endpoint and
-is reserved for server administration.
-
-Static Shell and Python syntax have been validated. Real network and load tests
-must be completed on the target VPS.
+Static Shell and Python syntax checks are included. Actual client and concurrent
+load tests must be performed on the target VPS.

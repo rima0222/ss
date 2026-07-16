@@ -11,6 +11,7 @@
 {% for category,message in messages %}<div class="notice {{category}}">{{message}}</div>{% endfor %}
 {% endwith %}
 
+<div id="gateway_status" class="gateway-status">Gateway در حال بررسی…</div>
 <section class="stats">
 <article class="stat glass"><span>کل کاربران</span><strong id="total_users">0</strong></article>
 <article class="stat glass"><span>فعال</span><strong id="active_users">0</strong></article>
@@ -64,7 +65,7 @@
 <td><div class="user-cell"><div class="avatar">{{u.username[:1]|upper}}</div><div><strong>{{u.username}}</strong><small>ID #{{u.id}}</small></div></div></td>
 <td><div class="chips">{% if u.tcp_enabled %}<span class="chip cyan">OpenSSH : {{u.tcp_port}}</span>{% endif %}{% if u.ws_enabled %}<span class="chip purple">WS : {{u.ws_port}}</span>{% endif %}</div></td>
 <td>{% if u.paused %}<span class="status paused">متوقف</span>{% else %}<span class="status active">فعال</span>{% endif %}</td>
-<td><div class="online-stack">{% if u.tcp_enabled %}<span data-online-tcp="{{u.username}}" class="online">○ TCP</span>{% endif %}{% if u.ws_enabled %}<span data-online-ws="{{u.username}}" class="online">○ WS</span>{% endif %}</div></td>
+<td><div class="online-stack">{% if u.tcp_enabled %}<span data-online-tcp="{{u.username}}" class="online">○ TCP (0)</span>{% endif %}{% if u.ws_enabled %}<span data-online-ws="{{u.username}}" class="online">○ WS (0)</span>{% endif %}</div></td>
 <td><div class="traffic"><strong><span data-used="{{u.username}}">{{u.used_human}}</span> / <span data-quota="{{u.username}}">{{u.limit_gb}} GB</span></strong><div class="progress"><i data-progress="{{u.username}}" style="width:{{u.percent}}%"></i></div></div></td>
 <td><span data-days="{{u.username}}" class="days">{{u.remaining_days}} روز</span></td>
 <td><div class="actions">

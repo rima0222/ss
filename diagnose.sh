@@ -64,3 +64,27 @@ d=json.load(open(p))
 print("age_seconds:", int(time.time())-int(d.get("updated_at",0)))
 print(json.dumps(d, indent=2))
 PY
+
+
+echo "=== Active gateway sessions ==="
+python3 - <<'PY' || true
+import json
+p="/run/custom-panel/live.json"
+d=json.load(open(p))
+print("snapshot_updated_at:", d.get("updated_at"))
+print("session_count:", d.get("session_count"))
+for username, info in d.get("users", {}).items():
+    print(username, info)
+PY
+
+echo "=== Persistent traffic ==="
+sqlite3 /etc/custom-panel/data/panel.db "
+SELECT
+ username,
+ printf('%.2f MB',(rx_bytes+tx_bytes)/1048576.0) AS used,
+ printf('%.2f GB',limit_bytes/1073741824.0) AS quota,
+ remaining_days,
+ status
+FROM users
+ORDER BY id;
+" 2>/dev/null || true

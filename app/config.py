@@ -14,6 +14,7 @@ class Config:
     WS_PORT_END = int(os.getenv("CUSTOM_PANEL_WS_PORT_END", "29999"))
     HELPER_SOCKET = os.getenv("CUSTOM_PANEL_HELPER_SOCKET", "/run/custom-panel/helper.sock")
     LIVE_PATH = os.getenv("CUSTOM_PANEL_LIVE_PATH", "/run/custom-panel/live.json")
+    EVENT_SOCKET = os.getenv("CUSTOM_PANEL_EVENT_SOCKET", "/run/custom-panel/events.sock")
     MAX_CONTENT_LENGTH = 8 * 1024 * 1024
     SESSION_COOKIE_HTTPONLY = True
     SESSION_COOKIE_SAMESITE = "Strict"
