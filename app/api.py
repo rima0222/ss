@@ -53,6 +53,10 @@ def stats():
         'memory_percent': mem(),
         'load': cpu(),
         'uptime_seconds': int(float(open('/proc/uptime').read().split()[0])),
+        'user_usage': {
+            item['username']: round(float(item.get('used_gb') or 0), 6)
+            for item in users
+        },
     })
 
 

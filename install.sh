@@ -253,10 +253,9 @@ data-ciphers AES-256-GCM:CHACHA20-POLY1305
 keepalive 10 120
 status /run/openvpn-server/status.log 10
 status-version 3
-management 127.0.0.1 7505
+management 127.0.0.1 7505 $OVPN/management.pass
 script-security 2
 client-connect $OVPN/client-connect.sh
-crl-verify $OVPN/crl.pem
 verb 3
 explicit-exit-notify 1
 EOF
@@ -268,13 +267,13 @@ CN="${common_name:-}"
 [[ ! -f "/etc/openvpn/server/clients/${CN}.disabled" ]]
 EOF
 chmod 750 "$OVPN/client-connect.sh"
-if [[ ! -f "$OVPN/crl.pem" ]]; then
-  pushd "$OVPN/easy-rsa" >/dev/null
-  ./easyrsa gen-crl >/dev/null 2>&1 || true
-  cp pki/crl.pem "$OVPN/crl.pem" 2>/dev/null || true
-  popd >/dev/null
+if [[ ! -s "$OVPN/management.pass" ]]; then
+  python3 - <<'PY' > "$OVPN/management.pass"
+import secrets
+print(secrets.token_urlsafe(32))
+PY
+  chmod 600 "$OVPN/management.pass"
 fi
-chmod 644 "$OVPN/crl.pem" 2>/dev/null || true
 
 # OpenVPN forwarding/NAT
 WAN_IF=$(ip route show default | awk '/default/ {print $5; exit}')
@@ -283,7 +282,13 @@ iptables -t nat -C POSTROUTING -s 10.67.0.0/24 -o "$WAN_IF" -j MASQUERADE 2>/dev
 iptables -C FORWARD -i tun0 -j ACCEPT 2>/dev/null || iptables -A FORWARD -i tun0 -j ACCEPT
 iptables -C FORWARD -o tun0 -j ACCEPT 2>/dev/null || iptables -A FORWARD -o tun0 -j ACCEPT
 
-systemctl enable --now openvpn-server@server || true
+systemctl enable openvpn-server@server
+systemctl restart openvpn-server@server
+if ! systemctl is-active --quiet openvpn-server@server; then
+  echo "[!] OpenVPN failed to start."
+  journalctl -u openvpn-server@server -n 80 --no-pager || true
+  exit 1
+fi
 
 cat > /etc/systemd/system/custom-panel-wg-restore.service <<EOF
 [Unit]
@@ -303,7 +308,7 @@ EOF
 cat > /etc/systemd/system/custom-panel-accounting.service <<EOF
 [Unit]
 Description=Custom Panel traffic accounting
-After=network-online.target wg-quick@wg0.service openvpn-server@server.service
+After=network-online.target wg-quick@wg0.service
 
 [Service]
 Type=simple

@@ -105,8 +105,16 @@ class OpenVPN:
     name='openvpn'; base=Path('/etc/openvpn/server')
     def _disconnect(self,name):
         try:
+            password=(self.base/'management.pass').read_text().strip()
             with socket.create_connection(('127.0.0.1',7505),timeout=3) as sock:
-                sock.recv(4096)
+                sock.settimeout(3)
+                greeting=sock.recv(4096)
+                if b'PASSWORD:' in greeting or password:
+                    sock.sendall((password+'\n').encode())
+                    try:
+                        sock.recv(4096)
+                    except Exception:
+                        pass
                 sock.sendall(f'kill {name}\nquit\n'.encode())
         except Exception:
             pass
@@ -123,15 +131,13 @@ class OpenVPN:
     def resume(self,u):
         (self.base/'clients'/f"{u['username']}.disabled").unlink(missing_ok=True)
     def delete(self,u):
-        self._disconnect(u['username'])
+        name=u['username']
+        disabled=self.base/'clients'/f"{name}.disabled"
+        disabled.parent.mkdir(parents=True,exist_ok=True)
+        disabled.write_text('deleted\n')
+        self._disconnect(name)
         er=self.base/'easy-rsa'
-        run([str(er/'easyrsa'),'--batch','revoke',u['username']],check=False)
-        run([str(er/'easyrsa'),'gen-crl'],check=False)
-        crl=er/'pki'/'crl.pem'
-        if crl.exists():
-            (self.base/'crl.pem').write_bytes(crl.read_bytes())
-            os.chmod(self.base/'crl.pem',0o644)
-        (self.base/'clients'/f"{u['username']}.disabled").unlink(missing_ok=True)
+        run([str(er/'easyrsa'),'--batch','revoke',name],check=False)
     def update(self,u): return None
     def client(self,u):
         n=u['username']; er=self.base/'easy-rsa'; host=current_app.config['SERVER_HOST']; port=current_app.config['OVPN_PORT']

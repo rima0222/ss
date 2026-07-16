@@ -19,6 +19,10 @@ async function stats(){
     for(const [id,v] of Object.entries(values)){
       const el=document.getElementById(id); if(el) el.textContent=v;
     }
+    for(const [name,used] of Object.entries(s.user_usage||{})){
+      const el=document.querySelector(`[data-used="${CSS.escape(name)}"]`);
+      if(el) el.textContent=Number(used).toFixed(3);
+    }
   }catch(e){}
 }
 

@@ -30,3 +30,25 @@ sudo cat /etc/custom-panel/admin-credentials.txt
 ```
 
 The clean installer saves an emergency archive under `/root/custom-panel-rescue-*.tar.gz`.
+
+## v1.6 OpenVPN and accounting fixes
+
+- Removes the mandatory CRL file that prevented OpenVPN from starting.
+- Protects the localhost OpenVPN management interface with a generated password.
+- Stops installation if OpenVPN fails its health check.
+- Logs accounting errors instead of silently discarding them.
+- Counts a new WireGuard/OpenVPN counter from zero on first observation.
+- Handles counter resets after protocol restarts.
+- Refreshes each user's stored usage in the dashboard every 15 seconds.
+
+Diagnostics:
+
+```bash
+sudo systemctl status openvpn-server@server --no-pager
+sudo systemctl status custom-panel-accounting --no-pager
+sudo journalctl -u custom-panel-accounting -n 100 --no-pager
+sudo wg show wg0 transfer
+```
+
+Traffic accounting in this release covers WireGuard and OpenVPN. Linux SSH
+sessions are not assigned fabricated traffic values.
