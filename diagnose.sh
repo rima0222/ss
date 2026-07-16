@@ -22,22 +22,13 @@ ss -lntp || true
 
 echo "=== SQLite write check ==="
 if [[ -f "$APP/.env" ]]; then
-  set -a
-  source "$APP/.env"
-  set +a
-  runuser -u custompanel -- env PYTHONPATH="$APP" \
-    CUSTOM_PANEL_SECRET_KEY="$CUSTOM_PANEL_SECRET_KEY" \
-    CUSTOM_PANEL_ADMIN_USERNAME="$CUSTOM_PANEL_ADMIN_USERNAME" \
-    CUSTOM_PANEL_ADMIN_PASSWORD_HASH="$CUSTOM_PANEL_ADMIN_PASSWORD_HASH" \
-    CUSTOM_PANEL_DATA_KEY="$CUSTOM_PANEL_DATA_KEY" \
-    CUSTOM_PANEL_DB="$CUSTOM_PANEL_DB" \
-    CUSTOM_PANEL_SERVER_HOST="$CUSTOM_PANEL_SERVER_HOST" \
-    CUSTOM_PANEL_INTERNAL_SSH_PORT="$CUSTOM_PANEL_INTERNAL_SSH_PORT" \
-    CUSTOM_PANEL_TCP_PORT_START="$CUSTOM_PANEL_TCP_PORT_START" \
-    CUSTOM_PANEL_TCP_PORT_END="$CUSTOM_PANEL_TCP_PORT_END" \
-    CUSTOM_PANEL_WS_PORT_START="$CUSTOM_PANEL_WS_PORT_START" \
-    CUSTOM_PANEL_WS_PORT_END="$CUSTOM_PANEL_WS_PORT_END" \
-    CUSTOM_PANEL_HELPER_SOCKET="$CUSTOM_PANEL_HELPER_SOCKET" \
+  ENV_ARGS=()
+  while IFS='=' read -r key value; do
+    [[ -z "$key" || "$key" == \#* ]] && continue
+    ENV_ARGS+=("$key=$value")
+  done < "$APP/.env"
+
+  runuser -u custompanel -- env PYTHONPATH="$APP" "${ENV_ARGS[@]}" \
     "$APP/venv/bin/python" - <<'PY' || true
 from app.config import Config
 from app.db import init_db, connect

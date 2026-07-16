@@ -81,3 +81,17 @@ sudo bash /etc/custom-panel/diagnose.sh
 
 Static Shell and Python syntax validation has been completed. Real client and
 load tests must still be performed on the target VPS.
+
+## v11.1 installer fix
+
+The installer no longer runs `.env` with Bash `source`. Werkzeug password
+hashes contain `$` characters, and sourcing the file could produce errors such
+as:
+
+```text
+.env: line 3: $5: unbound variable
+.env: line 3: mM7YrCJLEhAhLUnx: unbound variable
+```
+
+The installer now passes environment variables directly and systemd reads the
+environment file literally.
