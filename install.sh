@@ -30,9 +30,17 @@ if [[ "$CLEAN" == "1" ]]; then
   systemctl daemon-reload
 fi
 
+# Remove stale passwd lock files only when no account-management command is active.
+if ! pgrep -x useradd >/dev/null 2>&1 &&
+   ! pgrep -x usermod >/dev/null 2>&1 &&
+   ! pgrep -x userdel >/dev/null 2>&1 &&
+   ! pgrep -x chpasswd >/dev/null 2>&1; then
+  rm -f /etc/passwd.lock /etc/shadow.lock /etc/group.lock /etc/gshadow.lock
+fi
+
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
-apt-get install -y python3 python3-venv git curl ca-certificates openssh-server sqlite3 ufw
+apt-get install -y python3 python3-venv git curl ca-certificates openssh-server sqlite3 ufw util-linux
 
 getent group panelusers >/dev/null || groupadd --system panelusers
 getent group custompanel >/dev/null || groupadd --system custompanel
@@ -71,6 +79,10 @@ systemctl restart ssh
 
 rm -rf "$APP"
 git clone --depth=1 "$REPO" "$APP"
+test -f "$APP/app/__init__.py" || { echo "Repository is missing app/__init__.py"; exit 1; }
+test -f "$APP/requirements.txt" || { echo "Repository is missing requirements.txt"; exit 1; }
+test -f "$APP/templates/index.html" || { echo "Repository is missing templates/index.html"; exit 1; }
+
 python3 -m venv "$APP/venv"
 "$APP/venv/bin/pip" install --upgrade pip
 "$APP/venv/bin/pip" install -r "$APP/requirements.txt"
@@ -149,6 +161,7 @@ User=root
 Group=root
 WorkingDirectory=$APP
 EnvironmentFile=$APP/.env
+Environment=PYTHONPATH=$APP
 ExecStart=$APP/venv/bin/python -m app.account_helper
 Restart=on-failure
 RestartSec=2
@@ -174,6 +187,7 @@ User=panelproxy
 Group=custompanel
 WorkingDirectory=$APP
 EnvironmentFile=$APP/.env
+Environment=PYTHONPATH=$APP
 ExecStart=$APP/venv/bin/python -m app.proxy_runtime
 Restart=on-failure
 RestartSec=2
@@ -200,6 +214,7 @@ User=custompanel
 Group=custompanel
 WorkingDirectory=$APP
 EnvironmentFile=$APP/.env
+Environment=PYTHONPATH=$APP
 ExecStart=$APP/venv/bin/python -m app.accounting_worker
 Restart=on-failure
 RestartSec=3
@@ -226,6 +241,7 @@ User=custompanel
 Group=custompanel
 WorkingDirectory=$APP
 EnvironmentFile=$APP/.env
+Environment=PYTHONPATH=$APP
 ExecStart=$APP/venv/bin/gunicorn --workers 1 --threads 4 --timeout 30 --keep-alive 3 --max-requests 3000 --max-requests-jitter 300 --bind 0.0.0.0:5000 "app:create_app()"
 Restart=on-failure
 RestartSec=3
@@ -243,24 +259,47 @@ ufw allow 5000/tcp >/dev/null 2>&1 || true
 ufw allow 20000:29999/tcp >/dev/null 2>&1 || true
 ufw --force enable >/dev/null 2>&1 || true
 
-# Permission and import preflight tests.
+# Permission preflight tests.
 namei -l "$APP" || true
-sudo -u panelproxy test -x "$APP"
-sudo -u custompanel test -x "$APP"
-sudo -u panelproxy test -r "$APP/app/proxy_runtime.py"
-sudo -u custompanel test -r "$APP/app/__init__.py"
-sudo -u panelproxy test -w "$APP/data"
-sudo -u custompanel test -w "$APP/data"
+runuser -u panelproxy -- test -x "$APP"
+runuser -u custompanel -- test -x "$APP"
+runuser -u panelproxy -- test -r "$APP/app/proxy_runtime.py"
+runuser -u custompanel -- test -r "$APP/app/__init__.py"
+runuser -u panelproxy -- test -w "$APP/data"
+runuser -u custompanel -- test -w "$APP/data"
 
-sudo -u panelproxy env $(cat "$APP/.env" | xargs) \
-  "$APP/venv/bin/python" -c "from app.db import init_db; init_db('$APP/data/panel.db')"
-sudo -u custompanel env $(cat "$APP/.env" | xargs) \
+# Import tests run from the application directory with the same environment
+# and PYTHONPATH used by systemd. This avoids "No module named app".
+set -a
+source "$APP/.env"
+set +a
+runuser -u panelproxy -- env \
+  PYTHONPATH="$APP" \
+  CUSTOM_PANEL_SECRET_KEY="$CUSTOM_PANEL_SECRET_KEY" \
+  CUSTOM_PANEL_ADMIN_USERNAME="$CUSTOM_PANEL_ADMIN_USERNAME" \
+  CUSTOM_PANEL_ADMIN_PASSWORD_HASH="$CUSTOM_PANEL_ADMIN_PASSWORD_HASH" \
+  CUSTOM_PANEL_DATA_KEY="$CUSTOM_PANEL_DATA_KEY" \
+  CUSTOM_PANEL_DB="$CUSTOM_PANEL_DB" \
+  CUSTOM_PANEL_SERVER_HOST="$CUSTOM_PANEL_SERVER_HOST" \
+  CUSTOM_PANEL_INTERNAL_SSH_PORT="$CUSTOM_PANEL_INTERNAL_SSH_PORT" \
+  CUSTOM_PANEL_PORT_START="$CUSTOM_PANEL_PORT_START" \
+  CUSTOM_PANEL_PORT_END="$CUSTOM_PANEL_PORT_END" \
+  CUSTOM_PANEL_HELPER_SOCKET="$CUSTOM_PANEL_HELPER_SOCKET" \
+  "$APP/venv/bin/python" -c "import app.proxy_runtime"
+
+runuser -u custompanel -- env \
+  PYTHONPATH="$APP" \
+  CUSTOM_PANEL_SECRET_KEY="$CUSTOM_PANEL_SECRET_KEY" \
+  CUSTOM_PANEL_ADMIN_USERNAME="$CUSTOM_PANEL_ADMIN_USERNAME" \
+  CUSTOM_PANEL_ADMIN_PASSWORD_HASH="$CUSTOM_PANEL_ADMIN_PASSWORD_HASH" \
+  CUSTOM_PANEL_DATA_KEY="$CUSTOM_PANEL_DATA_KEY" \
+  CUSTOM_PANEL_DB="$CUSTOM_PANEL_DB" \
+  CUSTOM_PANEL_SERVER_HOST="$CUSTOM_PANEL_SERVER_HOST" \
+  CUSTOM_PANEL_INTERNAL_SSH_PORT="$CUSTOM_PANEL_INTERNAL_SSH_PORT" \
+  CUSTOM_PANEL_PORT_START="$CUSTOM_PANEL_PORT_START" \
+  CUSTOM_PANEL_PORT_END="$CUSTOM_PANEL_PORT_END" \
+  CUSTOM_PANEL_HELPER_SOCKET="$CUSTOM_PANEL_HELPER_SOCKET" \
   "$APP/venv/bin/python" -c "from app import create_app; create_app()"
-
-cat > /etc/tmpfiles.d/custom-panel.conf <<'EOF'
-d /run/custom-panel 0770 root custompanel -
-EOF
-systemd-tmpfiles --create /etc/tmpfiles.d/custom-panel.conf
 
 systemctl daemon-reload
 systemctl reset-failed custom-panel-helper custom-panel-proxy custom-panel-accounting custom-panel 2>/dev/null || true
@@ -281,6 +320,10 @@ for service in ssh custom-panel-helper custom-panel-proxy custom-panel-accountin
   fi
 done
 curl -fsS --max-time 10 http://127.0.0.1:5000/login >/dev/null
+ss -lnt | grep -qE '[:.]5000[[:space:]]' || {
+  echo "Panel port 5000 is not listening."
+  exit 1
+}
 
 echo "Installed: http://$SERVER_HOST:5000"
 echo "Credentials: $APP/admin-credentials.txt"

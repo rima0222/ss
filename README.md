@@ -1,28 +1,34 @@
-# Custom Panel v8 Stable — OpenSSH Only
+# Custom Panel v9 Final — OpenSSH Only
 
-v8 removes the systemd mount-namespace directives that caused:
+A lightweight OpenSSH panel for Ubuntu 22.04/24.04.
 
-```text
-status=200/CHDIR
-status=226/NAMESPACE
-Failed to set up mount namespacing
-```
+## Main capabilities
 
-## Architecture
-
-- OpenSSH only.
-- One unprivileged web service.
-- One unprivileged asyncio traffic proxy.
-- One unprivileged accounting worker.
-- One minimal root account helper.
-- Per-user public ports from 20000 to 29999.
-- Batched SQLite accounting.
+- One dedicated public SSH endpoint per user.
+- Accurate RX/TX counting at the assigned endpoint.
+- Real online state based on active endpoint connections.
+- Pause, resume, edit, delete and reset traffic.
+- Remaining days instead of expiry-date display.
+- Automatic quota and time enforcement.
+- JSON backup and restore.
 - Encrypted user passwords at rest.
-- Hashed panel administrator password.
-- Persistent remaining-day calculation.
-- Backup and restore.
+- Hashed administrator password.
+- Dark responsive dashboard.
+- One Gunicorn worker and one asyncio proxy process.
+
+## v9 installer fixes
+
+- All services receive an explicit `PYTHONPATH=/etc/custom-panel`.
+- Python import tests run with the service user's identity and environment.
+- Fixes `ModuleNotFoundError: No module named 'app'`.
+- Verifies that the cloned repository contains all required files.
+- Removes stale passwd lock files only when account tools are not running.
+- Verifies permissions, service state, the login endpoint and panel listener.
+- Provides a complete diagnostic script.
 
 ## Install
+
+Upload the ZIP contents directly to the root of the GitHub repository, then run:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/rima0222/ss/main/install.sh -o /tmp/install.sh
@@ -36,6 +42,12 @@ sudo bash /tmp/install.sh
 sudo bash /etc/custom-panel/show-credentials.sh
 ```
 
+Set a custom administrator password:
+
+```bash
+sudo bash /etc/custom-panel/reset-admin-password.sh 'NEW_STRONG_PASSWORD'
+```
+
 ## Diagnostics
 
 ```bash
@@ -44,9 +56,9 @@ sudo bash /etc/custom-panel/diagnose.sh
 
 ## Important accounting rule
 
-Traffic is attributed to the user's dedicated public port. A user must connect
-through the port assigned to that account. The proxy counts every byte before
-forwarding the encrypted connection to OpenSSH.
+Traffic belongs to the dedicated public port, not to the SSH username discovered
+inside the encrypted connection. Each user must use the port assigned to that
+account. Using another account's port attributes traffic to that endpoint.
 
-Static Shell and Python syntax checks were completed. Real network, accounting,
-and concurrent-load tests must be performed on the target VPS.
+Shell and Python syntax have been validated. Real SSH connection and load tests
+must still be performed on the target VPS.
