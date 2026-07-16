@@ -40,18 +40,6 @@ def list_users():
         )
     return rows
 
-def restart_proxy():
-    result = subprocess.run(
-        ["systemctl", "restart", "custom-panel-proxy"],
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=30,
-        check=False,
-    )
-    if result.returncode:
-        raise RuntimeError(result.stderr.strip() or "Proxy restart failed")
-
 @users_bp.get("/")
 @login_required
 def index():
@@ -86,7 +74,6 @@ def add():
                 days,
             ))
             conn.commit()
-        restart_proxy()
         flash("کاربر ساخته شد.", "success")
     except Exception as exc:
         flash(f"خطا: {exc}", "error")
@@ -122,7 +109,6 @@ def edit(username):
                 username,
             ))
             conn.commit()
-        restart_proxy()
         flash("تغییرات ذخیره شد.", "success")
     except Exception as exc:
         flash(f"خطا: {exc}", "error")

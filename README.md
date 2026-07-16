@@ -1,23 +1,24 @@
-# Custom Panel v7 — Secure Optimized SSH
+# Custom Panel v7 Final — OpenSSH
 
-OpenSSH-only panel designed for a small VPS and many mostly-idle users.
+This release uses **OpenSSH only**. OpenSSH is the preferred choice for Ubuntu
+because it is mature, actively maintained, widely audited, integrated with
+systemd/PAM, and avoids running extra SSH daemons.
 
-## Architecture
+## v7 Final fixes
 
-- Web panel runs as an unprivileged `custompanel` user.
-- Linux account changes are performed by a minimal root helper over a protected Unix socket.
-- Traffic proxy runs as the unprivileged `panelproxy` user.
-- One asyncio process handles all per-user ports.
-- Traffic is batched to SQLite every three seconds.
-- User passwords are encrypted at rest with Fernet.
-- Admin password is stored as a secure Werkzeug hash.
-- Login attempts are rate limited.
-- Remaining days use a persistent daily rollover, so service restarts do not reset the timer.
-
-## Accurate traffic
-
-Each user receives a dedicated port between 20000 and 29999. Every byte passing
-through that endpoint is counted before forwarding to internal OpenSSH.
+- Fixes `status=200/CHDIR` and `Permission denied` for `panelproxy`.
+- Assigns `panelproxy` to the `custompanel` group.
+- Keeps application code root-owned and read-only.
+- Makes only data, backup, and runtime directories group-writable.
+- Verifies service-user permissions before starting services.
+- Adds dynamic proxy reconciliation every two seconds.
+- Creating, pausing, resuming, restoring, or deleting a user no longer calls
+  `systemctl restart`.
+- Existing connections continue while unrelated users are changed.
+- Traffic is flushed to SQLite every three seconds.
+- Passwords are encrypted at rest.
+- The web panel and traffic proxy run without root privileges.
+- Only the minimal account helper runs as root.
 
 ## Install
 
@@ -36,11 +37,18 @@ sudo bash /etc/custom-panel/show-credentials.sh
 ## Services
 
 ```bash
-sudo systemctl status custom-panel-helper
-sudo systemctl status custom-panel-proxy
-sudo systemctl status custom-panel-accounting
-sudo systemctl status custom-panel
+sudo systemctl status custom-panel-helper --no-pager
+sudo systemctl status custom-panel-proxy --no-pager
+sudo systemctl status custom-panel-accounting --no-pager
+sudo systemctl status custom-panel --no-pager
 ```
 
-Static syntax validation was performed, but real connection/load testing must be
-done on the target VPS.
+## Accounting model
+
+Each user receives a dedicated public port in the range `20000-29999`.
+All bytes passing through that port are counted before forwarding to the
+internal OpenSSH listener. Online status represents an active connection to
+that assigned endpoint.
+
+Static Shell and Python syntax checks are included in the release process.
+A real connection and load test still has to be performed on the target VPS.

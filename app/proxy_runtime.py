@@ -15,16 +15,19 @@ class ProxyRuntime:
     def __init__(self):
         self.lock = asyncio.Lock()
         self.counters = {}
-        self.servers = []
+        self.servers = {}
         self.stop = asyncio.Event()
 
-    def endpoints(self):
+    def desired_endpoints(self):
         with connect() as conn:
             rows = conn.execute("""
             SELECT id,port FROM users
             WHERE paused=0 AND status='Active' AND remaining_days>0
             """).fetchall()
-        return [Endpoint(int(row["id"]), int(row["port"])) for row in rows]
+        return {
+            int(row["port"]): Endpoint(int(row["id"]), int(row["port"]))
+            for row in rows
+        }
 
     async def update(self, uid, rx=0, tx=0, online_delta=0):
         async with self.lock:
@@ -71,12 +74,47 @@ class ProxyRuntime:
         finally:
             await self.update(endpoint.user_id, online_delta=-1)
 
+    async def open_endpoint(self, endpoint):
+        return await asyncio.start_server(
+            lambda r, w, ep=endpoint: self.connection(r, w, ep),
+            "0.0.0.0",
+            endpoint.port,
+            backlog=256,
+            reuse_address=True,
+        )
+
+    async def reconcile(self):
+        desired = self.desired_endpoints()
+        current_ports = set(self.servers)
+        desired_ports = set(desired)
+
+        for port in current_ports - desired_ports:
+            server = self.servers.pop(port)
+            server.close()
+            await server.wait_closed()
+
+        for port in desired_ports - current_ports:
+            self.servers[port] = await self.open_endpoint(desired[port])
+
+    async def reconcile_loop(self):
+        while not self.stop.is_set():
+            try:
+                await self.reconcile()
+            except Exception:
+                # Keep serving existing endpoints if one reconciliation fails.
+                pass
+            try:
+                await asyncio.wait_for(self.stop.wait(), timeout=2)
+            except asyncio.TimeoutError:
+                pass
+
     async def flush(self):
         async with self.lock:
             snapshot = {uid: dict(values) for uid, values in self.counters.items()}
             for values in self.counters.values():
                 values["rx"] = 0
                 values["tx"] = 0
+
         if not snapshot:
             return
 
@@ -108,23 +146,16 @@ class ProxyRuntime:
         await self.flush()
 
     async def run(self):
-        for endpoint in self.endpoints():
-            server = await asyncio.start_server(
-                lambda r, w, ep=endpoint: self.connection(r, w, ep),
-                "0.0.0.0",
-                endpoint.port,
-                backlog=256,
-                reuse_address=True,
-            )
-            self.servers.append(server)
-
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGTERM, signal.SIGINT):
             loop.add_signal_handler(sig, self.stop.set)
 
-        await self.flush_loop()
-        for server in self.servers:
+        await self.reconcile()
+        await asyncio.gather(self.reconcile_loop(), self.flush_loop())
+
+        for server in self.servers.values():
             server.close()
+        for server in self.servers.values():
             await server.wait_closed()
 
 async def main():

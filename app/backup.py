@@ -1,5 +1,4 @@
 import json
-import subprocess
 from datetime import datetime, timezone
 from io import BytesIO
 
@@ -85,7 +84,6 @@ def restore():
                 ))
             conn.commit()
 
-        subprocess.run(["systemctl", "restart", "custom-panel-proxy"], check=False)
         flash("بکاپ بازیابی شد.", "success")
     except Exception as exc:
         flash(f"خطا: {exc}", "error")

@@ -26,9 +26,6 @@ def helper(action, username):
     if not result.get("ok"):
         raise RuntimeError(result.get("error", "helper failed"))
 
-def restart_proxy():
-    subprocess.run(["systemctl", "restart", "custom-panel-proxy"], check=False)
-
 def apply_day_rollover():
     today = dt.date.today()
     with connect() as conn:
@@ -78,8 +75,6 @@ def enforce():
                 """, (user["id"],))
                 changed = True
         conn.commit()
-    if changed:
-        restart_proxy()
 
 def main():
     init_db(Config.DB_PATH)

@@ -38,6 +38,8 @@ getent group panelusers >/dev/null || groupadd --system panelusers
 getent group custompanel >/dev/null || groupadd --system custompanel
 id -u custompanel >/dev/null 2>&1 || useradd --system --no-create-home --gid custompanel --shell /usr/sbin/nologin custompanel
 id -u panelproxy >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin panelproxy
+usermod -g custompanel custompanel
+usermod -a -G custompanel panelproxy
 
 cat > /usr/local/bin/panel-hold <<'EOF'
 #!/usr/bin/env bash
@@ -74,9 +76,20 @@ python3 -m venv "$APP/venv"
 "$APP/venv/bin/pip" install -r "$APP/requirements.txt"
 
 mkdir -p "$APP/data" "$APP/backups" "$APP/runtime" /run/custom-panel
+
+# The application code remains root-owned and read-only to service users.
+chown -R root:custompanel "$APP"
+chmod 750 "$APP"
+find "$APP/app" "$APP/templates" "$APP/static" "$APP/venv" -type d -exec chmod 750 {} +
+find "$APP/app" "$APP/templates" "$APP/static" -type f -exec chmod 640 {} +
+find "$APP/venv/bin" -type f -exec chmod 750 {} +
+
+# Database/runtime directories are writable by the custompanel group.
 chown -R custompanel:custompanel "$APP/data" "$APP/backups" "$APP/runtime"
+chmod 770 "$APP/data" "$APP/backups" "$APP/runtime"
+
 chown root:custompanel /run/custom-panel
-chmod 750 "$APP" "$APP/data" "$APP/backups" "$APP/runtime" /run/custom-panel
+chmod 770 /run/custom-panel
 
 SERVER_HOST="${CUSTOM_PANEL_SERVER_HOST:-$(curl -4fsS --max-time 10 https://api.ipify.org || hostname -I | awk '{print $1}')}"
 [[ -n "$SERVER_HOST" ]] || { echo "Could not detect server IP."; exit 1; }
@@ -169,7 +182,7 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
 ReadOnlyPaths=$APP
-ReadWritePaths=$APP/data /run
+ReadWritePaths=$APP/data /run/custom-panel
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 
 [Install]
@@ -196,7 +209,7 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
 ReadOnlyPaths=$APP
-ReadWritePaths=$APP/data /run/custom-panel
+ReadWritePaths=$APP/data /run/custom-panel/custom-panel
 RestrictAddressFamilies=AF_UNIX
 
 [Install]
@@ -235,6 +248,14 @@ ufw allow OpenSSH >/dev/null 2>&1 || true
 ufw allow 5000/tcp >/dev/null 2>&1 || true
 ufw allow 20000:29999/tcp >/dev/null 2>&1 || true
 ufw --force enable >/dev/null 2>&1 || true
+
+# Verify service users can enter the application directory before startup.
+sudo -u panelproxy test -x "$APP"
+sudo -u custompanel test -x "$APP"
+sudo -u panelproxy test -r "$APP/app/proxy_runtime.py"
+sudo -u custompanel test -r "$APP/app/__init__.py"
+sudo -u panelproxy test -w "$APP/data"
+sudo -u custompanel test -w "$APP/data"
 
 systemctl daemon-reload
 systemctl enable custom-panel-helper custom-panel-proxy custom-panel-accounting custom-panel >/dev/null
