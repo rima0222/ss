@@ -1,24 +1,12 @@
 CREATE TABLE users(
 id INTEGER PRIMARY KEY,
 username TEXT UNIQUE,
-password_hash TEXT,
 quota INTEGER DEFAULT 0,
-traffic INTEGER DEFAULT 0,
-expire_days INTEGER DEFAULT 0,
-paused INTEGER DEFAULT 0
+traffic INTEGER DEFAULT 0
 );
 
 CREATE TABLE sessions(
 id INTEGER PRIMARY KEY,
 username TEXT,
-ip TEXT,
-online INTEGER DEFAULT 1,
-last_seen INTEGER
-);
-
-CREATE TABLE traffic(
-id INTEGER PRIMARY KEY,
-username TEXT,
-rx INTEGER DEFAULT 0,
-tx INTEGER DEFAULT 0
+online INTEGER DEFAULT 0
 );

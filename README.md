@@ -1,17 +1,30 @@
-# Custom Panel v16 System Manager
+# Custom Panel v16 Final
 
-Architecture:
-- Clean installer
-- Smart cleanup
-- Admin credential generator
-- Separate agent layer
-- Session monitoring module
-- Traffic accounting module
-- SQLite database
-- Systemd services
+## One line install
 
-Install:
 curl -fsSL https://raw.githubusercontent.com/rima0222/ss/main/install.sh | sudo bash
 
-Credentials:
+## Show admin
+
 sudo bash /etc/custom-panel/show-credentials.sh
+
+## Reset admin password
+
+sudo bash /etc/custom-panel/reset-admin-password.sh NEW_PASSWORD
+
+## Services
+
+systemctl status custom-panel
+systemctl status custom-panel-agent
+
+## Clean uninstall
+
+sudo bash uninstall-clean.sh
+
+Features:
+- Clean installation
+- Previous panel state cleanup
+- New admin credentials
+- Separate panel and agent services
+- Database foundation
+- Session and traffic modules

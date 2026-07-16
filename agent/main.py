@@ -1,16 +1,10 @@
-import time
-import json
+import time,json
 from pathlib import Path
 
-Path("/run/custom-panel").mkdir(parents=True,exist_ok=True)
+Path('/run/custom-panel').mkdir(parents=True,exist_ok=True)
 
 while True:
-    data={
-        "online_users":0,
-        "traffic":{},
-        "updated":int(time.time())
-    }
-    Path("/run/custom-panel/status.json").write_text(
-        json.dumps(data)
+    Path('/run/custom-panel/status.json').write_text(
+        json.dumps({'online':0,'traffic':0})
     )
-    time.sleep(2)
+    time.sleep(5)
