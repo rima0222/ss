@@ -1,25 +1,18 @@
 #!/bin/bash
 set -e
 
-echo '[*] Custom Panel v16 Final installer'
+BASE=/opt/custom-panel
 
-systemctl stop custom-panel.service 2>/dev/null || true
-systemctl stop custom-panel-agent.service 2>/dev/null || true
+echo "[*] Installing Custom Panel"
 
-systemctl disable custom-panel.service 2>/dev/null || true
-systemctl disable custom-panel-agent.service 2>/dev/null || true
-
-rm -f /etc/systemd/system/custom-panel*.service
-systemctl daemon-reload
-
-rm -rf /var/lib/custom-panel
-rm -rf /run/custom-panel
+mkdir -p $BASE
+mkdir -p /etc/custom-panel
+mkdir -p /var/lib/custom-panel
 
 apt update -y
-apt install -y python3 python3-venv sqlite3 openssl
+apt install -y python3 python3-venv python3-pip sqlite3 openssl
 
-mkdir -p /opt/custom-panel
-mkdir -p /etc/custom-panel
+python3 -m venv $BASE/venv
 
 PASS=$(openssl rand -hex 16)
 
@@ -30,15 +23,15 @@ EOF
 
 chmod 600 /etc/custom-panel/admin-credentials.txt
 
-echo '[*] Installing services'
+cp -r panel agent database $BASE/
 
 cat >/etc/systemd/system/custom-panel.service <<EOF
 [Unit]
-Description=Custom Panel v16
+Description=Custom Panel
 
 [Service]
-WorkingDirectory=/opt/custom-panel
-ExecStart=/usr/bin/python3 /opt/custom-panel/panel/app.py
+WorkingDirectory=$BASE
+ExecStart=$BASE/venv/bin/python3 $BASE/panel/app.py
 Restart=always
 
 [Install]
@@ -47,11 +40,11 @@ EOF
 
 cat >/etc/systemd/system/custom-panel-agent.service <<EOF
 [Unit]
-Description=Custom Panel Agent v16
+Description=Custom Panel Agent
 
 [Service]
-WorkingDirectory=/opt/custom-panel
-ExecStart=/usr/bin/python3 /opt/custom-panel/agent/main.py
+WorkingDirectory=$BASE
+ExecStart=$BASE/venv/bin/python3 $BASE/agent/main.py
 Restart=always
 
 [Install]
@@ -60,9 +53,7 @@ EOF
 
 systemctl daemon-reload
 systemctl enable custom-panel custom-panel-agent
-systemctl start custom-panel custom-panel-agent
+systemctl restart custom-panel custom-panel-agent
 
-echo '================================'
-echo 'Custom Panel v16 Installed'
+echo "Installed"
 cat /etc/custom-panel/admin-credentials.txt
-echo '================================'

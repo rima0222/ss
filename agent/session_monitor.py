@@ -1,1 +1,1 @@
-# Session monitor module
+# PAM session monitor implementation

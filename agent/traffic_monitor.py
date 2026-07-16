@@ -1,1 +1,1 @@
-# Traffic accounting module
+# nftables traffic monitor implementation

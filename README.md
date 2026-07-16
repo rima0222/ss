@@ -1,30 +1,21 @@
-# Custom Panel v16 Final
+# Custom Panel Production v1
 
-## One line install
+Install:
+curl -fsSL https://raw.githubusercontent.com/YOUR_REPO/main/install.sh | sudo bash
 
-curl -fsSL https://raw.githubusercontent.com/rima0222/ss/main/install.sh | sudo bash
-
-## Show admin
-
+After install:
 sudo bash /etc/custom-panel/show-credentials.sh
 
-## Reset admin password
+Reset admin:
+sudo bash /etc/custom-panel/reset-admin-password.sh
 
-sudo bash /etc/custom-panel/reset-admin-password.sh NEW_PASSWORD
-
-## Services
-
+Status:
 systemctl status custom-panel
 systemctl status custom-panel-agent
 
-## Clean uninstall
-
-sudo bash uninstall-clean.sh
-
-Features:
-- Clean installation
-- Previous panel state cleanup
-- New admin credentials
-- Separate panel and agent services
-- Database foundation
-- Session and traffic modules
+This release contains separated modules:
+- installer
+- panel
+- agent
+- database
+- services
