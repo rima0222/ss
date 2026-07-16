@@ -13,47 +13,29 @@ def init_db(path):
         PRAGMA journal_mode=WAL;
         PRAGMA synchronous=NORMAL;
         PRAGMA foreign_keys=ON;
+        PRAGMA temp_store=MEMORY;
+        PRAGMA cache_size=-16000;
 
         CREATE TABLE IF NOT EXISTS users(
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           username TEXT UNIQUE NOT NULL,
           password TEXT NOT NULL,
-          limit_gb REAL NOT NULL DEFAULT 0,
-          expire_date TEXT,
+          port INTEGER UNIQUE NOT NULL,
+          limit_bytes INTEGER NOT NULL DEFAULT 0,
+          remaining_days INTEGER NOT NULL DEFAULT 30,
           paused INTEGER NOT NULL DEFAULT 0,
           status TEXT NOT NULL DEFAULT 'Active',
-
-          openssh_enabled INTEGER NOT NULL DEFAULT 1,
-          dropbear_enabled INTEGER NOT NULL DEFAULT 0,
-          ws_enabled INTEGER NOT NULL DEFAULT 0,
-          tls_enabled INTEGER NOT NULL DEFAULT 0,
-
-          openssh_port INTEGER UNIQUE,
-          dropbear_port INTEGER UNIQUE,
-          ws_port INTEGER UNIQUE,
-          tls_port INTEGER UNIQUE,
-          ws_token TEXT,
-
-          rx_bytes INTEGER NOT NULL DEFAULT 0,
-          tx_bytes INTEGER NOT NULL DEFAULT 0,
-          online_count INTEGER NOT NULL DEFAULT 0,
-          last_seen INTEGER NOT NULL DEFAULT 0,
-
-          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-        );
-
-        CREATE TABLE IF NOT EXISTS transport_usage(
-          user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-          transport TEXT NOT NULL,
           rx_bytes INTEGER NOT NULL DEFAULT 0,
           tx_bytes INTEGER NOT NULL DEFAULT 0,
           online INTEGER NOT NULL DEFAULT 0,
           last_seen INTEGER NOT NULL DEFAULT 0,
-          PRIMARY KEY(user_id, transport)
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
 
-        CREATE INDEX IF NOT EXISTS idx_users_state ON users(paused,status,expire_date);
+        CREATE INDEX IF NOT EXISTS idx_users_runtime
+          ON users(paused,status,remaining_days);
+        CREATE INDEX IF NOT EXISTS idx_users_port ON users(port);
         """)
         c.commit()
 

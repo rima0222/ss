@@ -1,76 +1,67 @@
-<!doctype html><html lang="fa" dir="rtl"><head>
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>SSH Suite Panel</title><link rel="stylesheet" href="/static/app.css"></head>
+<title>Optimized SSH Panel</title><link rel="stylesheet" href="/static/app.css">
+</head>
 <body>
-<div class="background-grid"></div><div class="glow glow-a"></div><div class="glow glow-b"></div>
-<main class="app-shell">
+<div class="grid-bg"></div><div class="glow one"></div><div class="glow two"></div>
+<main class="shell">
 <header class="header glass">
-  <div class="brand"><div class="logo">CP</div><div><span class="eyebrow">CUSTOM PANEL</span><h1>SSH Suite Control Center</h1></div></div>
-  <div class="header-actions"><a class="btn success" href="/backup/download">دانلود بکاپ</a><a class="btn secondary" href="/logout">خروج</a></div>
+<div class="brand"><div class="logo">CP</div><div><span class="eyebrow">CUSTOM PANEL</span><h1>Optimized SSH Control Center</h1></div></div>
+<div class="header-actions"><a class="btn success" href="/backup/download">دانلود بکاپ</a><a class="btn secondary" href="/logout">خروج</a></div>
 </header>
 
 {% with messages=get_flashed_messages(with_categories=true) %}
 {% for category,message in messages %}<div class="notice {{category}}">{{message}}</div>{% endfor %}
 {% endwith %}
 
-<section class="kpi-grid">
-<article class="kpi glass"><span>کل کاربران</span><strong id="total_users">0</strong><i>Users</i></article>
-<article class="kpi glass"><span>کاربران فعال</span><strong id="active_users">0</strong><i>Active</i></article>
-<article class="kpi glass"><span>آنلاین</span><strong id="online_users">0</strong><i>Connections</i></article>
-<article class="kpi glass"><span>حجم کل</span><strong><b id="total_limit_gb">0</b> GB</strong><i>Quota</i></article>
-<article class="kpi glass"><span>مصرف کل</span><strong><b id="total_used_gb">0</b> GB</strong><i>Traffic</i></article>
-<article class="kpi glass"><span>RAM</span><strong><b id="memory_percent">0</b>%</strong><i>System</i></article>
+<section class="stats">
+<article class="stat glass"><span>کل کاربران</span><strong id="total_users">0</strong></article>
+<article class="stat glass"><span>کاربران فعال</span><strong id="active_users">0</strong></article>
+<article class="stat glass"><span>آنلاین</span><strong id="online_users">0</strong></article>
+<article class="stat glass"><span>حجم کل</span><strong><b id="total_limit_gb">0</b> GB</strong></article>
+<article class="stat glass"><span>مصرف کل</span><strong id="total_used">0 B</strong></article>
+<article class="stat glass"><span>RAM</span><strong><b id="memory_percent">0</b>%</strong></article>
 </section>
 
 <section class="top-grid">
 <article class="panel glass">
-<div class="panel-title"><div><span class="eyebrow">PROVISION USER</span><h2>ساخت کاربر جدید</h2></div><span class="panel-badge">SSH</span></div>
+<div class="panel-title"><div><span class="eyebrow">CREATE USER</span><h2>ساخت کاربر SSH</h2></div><span class="badge">LIGHTWEIGHT</span></div>
 <form action="/users" method="post" class="create-form">
 <input type="hidden" name="_csrf" value="{{csrf_token()}}">
 <label><span>نام کاربری</span><input name="username" placeholder="example_user" required></label>
-<label><span>رمز عبور</span><input name="password" placeholder="Strong password" required></label>
+<label><span>رمز عبور</span><input name="password" placeholder="رمز قوی" required></label>
 <label><span>حجم مجاز</span><input name="limit_gb" type="number" min="0" step="0.1" placeholder="GB" required></label>
-<label><span>اعتبار</span><input name="days" type="number" min="1" placeholder="روز" required></label>
-<div class="transport-selector">
-<span>روش‌های اتصال</span>
-<label><input type="checkbox" name="protocols" value="openssh" checked><b>OpenSSH</b></label>
-<label><input type="checkbox" name="protocols" value="dropbear"><b>Dropbear</b></label>
-<label><input type="checkbox" name="protocols" value="ws"><b>SSH WS</b></label>
-<label><input type="checkbox" name="protocols" value="tls"><b>SSH TLS</b></label>
-</div>
-<button class="btn primary full">ساخت حساب</button>
+<label><span>زمان باقی‌مانده</span><input name="remaining_days" type="number" min="1" placeholder="روز" required></label>
+<button class="btn primary full">ساخت حساب SSH</button>
 </form>
 </article>
 
 <article class="panel glass">
-<div class="panel-title"><div><span class="eyebrow">RECOVERY</span><h2>بازیابی بکاپ</h2></div><span class="panel-badge purple">JSON</span></div>
+<div class="panel-title"><div><span class="eyebrow">BACKUP</span><h2>بازیابی اطلاعات</h2></div><span class="badge purple">JSON</span></div>
 <form action="/backup/restore" method="post" enctype="multipart/form-data" class="stack">
 <input type="hidden" name="_csrf" value="{{csrf_token()}}">
-<div class="file-drop"><input type="file" name="backup_file" accept=".json" required><span>فایل بکاپ JSON</span></div>
-<button class="btn primary">بازیابی اطلاعات</button>
+<div class="file-box"><input type="file" name="backup_file" accept=".json" required><span>انتخاب فایل بکاپ</span></div>
+<button class="btn primary">بازیابی بکاپ</button>
 </form>
-<p class="help">پورت‌ها، توکن WS، میزان مصرف، حجم و اعتبار ذخیره می‌شوند.</p>
+<p class="help">پورت، رمز، مصرف، حجم و زمان باقی‌مانده ذخیره می‌شوند.</p>
 </article>
 </section>
 
-<section class="users-panel glass">
-<div class="users-header"><div><span class="eyebrow">USER MANAGEMENT</span><h2>مدیریت کاربران</h2></div><div class="search-box"><span>⌕</span><input id="search" placeholder="جستجوی نام کاربری..." oninput="filterRows()"></div></div>
-<div class="table-container"><table>
-<thead><tr><th>کاربر</th><th>روش‌های اتصال</th><th>وضعیت</th><th>آنلاین</th><th>مصرف</th><th>اعتبار</th><th>عملیات</th></tr></thead>
+<section class="users glass">
+<div class="users-head"><div><span class="eyebrow">USERS</span><h2>مدیریت کاربران</h2></div><div class="search"><span>⌕</span><input id="search" placeholder="جستجو..." oninput="filterRows()"></div></div>
+<div class="table-wrap"><table>
+<thead><tr><th>کاربر</th><th>پورت</th><th>وضعیت</th><th>آنلاین</th><th>مصرف</th><th>زمان باقی‌مانده</th><th>عملیات</th></tr></thead>
 <tbody id="rows">
 {% for u in users %}
 <tr data-search="{{u.username|lower}}">
-<td><div class="user-info"><div class="user-avatar">{{u.username[:1]|upper}}</div><div><strong>{{u.username}}</strong><small>ID #{{u.id}}</small></div></div></td>
-<td><div class="chips">
-{% if u.openssh_enabled %}<span class="chip cyan">OpenSSH</span>{% endif %}
-{% if u.dropbear_enabled %}<span class="chip green">Dropbear</span>{% endif %}
-{% if u.ws_enabled %}<span class="chip purple">WS</span>{% endif %}
-{% if u.tls_enabled %}<span class="chip orange">TLS</span>{% endif %}
-</div></td>
+<td><div class="user-cell"><div class="avatar">{{u.username[:1]|upper}}</div><div><strong>{{u.username}}</strong><small>ID #{{u.id}}</small></div></div></td>
+<td><span class="port">{{u.port}}</span></td>
 <td>{% if u.paused %}<span class="status paused"><i></i>متوقف</span>{% else %}<span class="status active"><i></i>فعال</span>{% endif %}</td>
-<td><span data-online="{{u.username}}" class="online-state">○ Offline</span></td>
-<td><div class="traffic"><strong><span data-used="{{u.username}}">{{'%.3f'|format(u.used_gb)}}</span> GB</strong><div class="progress"><i style="width:{{[100,(u.used_gb/(u.limit_gb or 1)*100)]|min}}%"></i></div></div></td>
-<td><span class="days">{{u.remaining_days}} روز</span></td>
+<td><span data-online="{{u.username}}" class="online">○ Offline</span></td>
+<td><div class="traffic"><strong data-used="{{u.username}}">{{u.used_human}}</strong><div class="progress"><i data-progress="{{u.username}}" style="width:{{u.percent}}%"></i></div></div></td>
+<td><span data-days="{{u.username}}" class="days">{{u.remaining_days}} روز</span></td>
 <td><div class="actions">
 <a class="action" href="/users/{{u.username}}/config">کانفیگ</a>
 {% if u.paused %}
@@ -82,13 +73,16 @@
 <input type="hidden" name="_csrf" value="{{csrf_token()}}">
 <input name="password" placeholder="رمز جدید">
 <input name="limit_gb" type="number" min="0" step="0.1" value="{{u.limit_gb}}">
-<input name="remaining_days" type="number" min="0" placeholder="روز باقی‌مانده">
-<button class="btn primary">ذخیره</button></form></details>
-<form action="/users/{{u.username}}/reset-traffic" method="post"><input type="hidden" name="_csrf" value="{{csrf_token()}}"><button class="action secondary">ریست</button></form>
-<form action="/users/{{u.username}}/delete" method="post" onsubmit="return confirm('این کاربر حذف شود؟')"><input type="hidden" name="_csrf" value="{{csrf_token()}}"><button class="action danger">حذف</button></form>
+<input name="remaining_days" type="number" min="0" value="{{u.remaining_days}}">
+<button class="btn primary">ذخیره</button>
+</form></details>
+<form action="/users/{{u.username}}/reset-traffic" method="post"><input type="hidden" name="_csrf" value="{{csrf_token()}}"><button class="action secondary">ریست مصرف</button></form>
+<form action="/users/{{u.username}}/delete" method="post" onsubmit="return confirm('کاربر حذف شود؟')"><input type="hidden" name="_csrf" value="{{csrf_token()}}"><button class="action danger">حذف</button></form>
 </div></td>
 </tr>
 {% endfor %}
 </tbody></table></div>
 </section>
-</main><script src="/static/app.js"></script></body></html>
+</main>
+<script src="/static/app.js"></script>
+</body></html>

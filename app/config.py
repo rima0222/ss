@@ -6,8 +6,9 @@ class Config:
     ADMIN_PASSWORD = os.getenv("CUSTOM_PANEL_ADMIN_PASSWORD", "change-me")
     DB_PATH = os.getenv("CUSTOM_PANEL_DB", "/etc/custom-panel/data/panel.db")
     SERVER_HOST = os.getenv("CUSTOM_PANEL_SERVER_HOST", "SERVER_IP")
-    TLS_CERT = os.getenv("CUSTOM_PANEL_TLS_CERT", "/etc/custom-panel/tls/server.crt")
-    TLS_KEY = os.getenv("CUSTOM_PANEL_TLS_KEY", "/etc/custom-panel/tls/server.key")
-    MAX_CONTENT_LENGTH = 16 * 1024 * 1024
+    INTERNAL_SSH_PORT = int(os.getenv("CUSTOM_PANEL_INTERNAL_SSH_PORT", "2222"))
+    PORT_START = int(os.getenv("CUSTOM_PANEL_PORT_START", "20000"))
+    PORT_END = int(os.getenv("CUSTOM_PANEL_PORT_END", "29999"))
+    MAX_CONTENT_LENGTH = 8 * 1024 * 1024
     SESSION_COOKIE_HTTPONLY = True
     SESSION_COOKIE_SAMESITE = "Lax"

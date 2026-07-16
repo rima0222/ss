@@ -4,18 +4,26 @@ function filterRows(){
 }
 async function refreshStats(){
  try{
-  const r=await fetch('/api/stats',{cache:'no-store'});
-  if(!r.ok)return;
-  const d=await r.json();
-  for(const k of ['total_users','active_users','online_users','total_limit_gb','total_used_gb','memory_percent']){
-   const el=document.getElementById(k);if(el)el.textContent=d[k]??0;
+  const response=await fetch('/api/stats',{cache:'no-store'});
+  if(!response.ok)return;
+  const data=await response.json();
+  for(const key of ['total_users','active_users','online_users','total_limit_gb','total_used','memory_percent']){
+   const el=document.getElementById(key);if(el)el.textContent=data[key]??0;
   }
-  for(const [name,item] of Object.entries(d.users||{})){
+  for(const [name,item] of Object.entries(data.users||{})){
    const used=document.querySelector(`[data-used="${CSS.escape(name)}"]`);
-   if(used)used.textContent=Number(item.used_gb||0).toFixed(3);
+   if(used)used.textContent=item.used;
    const online=document.querySelector(`[data-online="${CSS.escape(name)}"]`);
-   if(online){online.textContent=item.online?'● Online':'○ Offline';online.classList.toggle('active',Boolean(item.online));}
+   if(online){online.textContent=item.online?'● Online':'○ Offline';online.classList.toggle('active',item.online);}
+   const days=document.querySelector(`[data-days="${CSS.escape(name)}"]`);
+   if(days)days.textContent=`${item.remaining_days} روز`;
+   const progress=document.querySelector(`[data-progress="${CSS.escape(name)}"]`);
+   if(progress){
+    const percent=item.limit_bytes>0?Math.min(100,item.used_bytes/item.limit_bytes*100):0;
+    progress.style.width=`${percent}%`;
+   }
   }
  }catch(_){}
 }
-refreshStats();setInterval(refreshStats,5000);
+refreshStats();
+setInterval(refreshStats,5000);

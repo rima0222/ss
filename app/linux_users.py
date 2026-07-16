@@ -5,66 +5,76 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-LOCK = Path("/run/lock/custom-panel-users.lock")
-USER_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,30}$")
+LOCK_PATH = Path("/run/lock/custom-panel-passwd.lock")
+USERNAME_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,30}$")
 
 @contextmanager
-def locked():
-    LOCK.parent.mkdir(parents=True, exist_ok=True)
-    with LOCK.open("a+") as f:
-        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+def passwd_lock():
+    LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with LOCK_PATH.open("a+") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         try:
             yield
         finally:
-            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
-def run(args, input_text=None, check=True, retries=3):
+def command(args, input_text=None, check=True):
     last = None
-    for attempt in range(retries):
+    for attempt in range(4):
         result = subprocess.run(
-            args, input=input_text, text=True,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            timeout=30, check=False,
+            args,
+            input=input_text,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+            check=False,
         )
         if result.returncode == 0 or not check:
             return result
         last = result
-        message = (result.stderr or result.stdout).lower()
+        message = ((result.stderr or "") + (result.stdout or "")).lower()
         if "cannot lock" not in message and "failure while writing" not in message:
             break
         time.sleep(1 + attempt)
-    raise RuntimeError((last.stderr or last.stdout).strip() if last else "system account command failed")
+    raise RuntimeError((last.stderr or last.stdout).strip() if last else "Linux user command failed")
 
-def validate(name):
-    if not USER_RE.fullmatch(name):
-        raise ValueError("نام کاربری نامعتبر است.")
+def validate(username):
+    if not USERNAME_RE.fullmatch(username):
+        raise ValueError("نام کاربری فقط باید شامل حروف کوچک انگلیسی، عدد، خط تیره یا زیرخط باشد.")
 
-def exists(name):
-    return run(["getent", "passwd", name], check=False).returncode == 0
+def exists(username):
+    return command(["getent", "passwd", username], check=False).returncode == 0
 
-def create_or_update(name, password):
-    validate(name)
-    with locked():
-        if not exists(name):
-            run(["useradd", "-M", "-N", "-G", "panelusers", "-s", "/usr/local/bin/panel-hold", name])
+def create_or_update(username, password):
+    validate(username)
+    with passwd_lock():
+        if not exists(username):
+            command([
+                "useradd", "-M", "-N", "-G", "panelusers",
+                "-s", "/usr/local/bin/panel-hold", username
+            ])
         else:
-            run(["usermod", "-a", "-G", "panelusers", "-s", "/usr/local/bin/panel-hold", name])
-        run(["chpasswd"], f"{name}:{password}\n")
-        run(["usermod", "-U", name], check=False)
+            command([
+                "usermod", "-a", "-G", "panelusers",
+                "-s", "/usr/local/bin/panel-hold", username
+            ])
+        command(["chpasswd"], f"{username}:{password}\n")
+        command(["usermod", "-U", username], check=False)
 
-def pause(name):
-    validate(name)
-    with locked():
-        run(["usermod", "-L", name], check=False)
-    run(["pkill", "-KILL", "-u", name], check=False)
+def pause(username):
+    validate(username)
+    with passwd_lock():
+        command(["usermod", "-L", username], check=False)
+    command(["pkill", "-KILL", "-u", username], check=False)
 
-def resume(name):
-    validate(name)
-    with locked():
-        run(["usermod", "-U", name], check=False)
+def resume(username):
+    validate(username)
+    with passwd_lock():
+        command(["usermod", "-U", username], check=False)
 
-def delete(name):
-    validate(name)
-    run(["pkill", "-KILL", "-u", name], check=False)
-    with locked():
-        run(["userdel", "-r", name], check=False)
+def delete(username):
+    validate(username)
+    command(["pkill", "-KILL", "-u", username], check=False)
+    with passwd_lock():
+        command(["userdel", "-r", username], check=False)
