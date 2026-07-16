@@ -43,9 +43,7 @@ apt-get install -y python3 python3-venv git curl ca-certificates openssh-server 
 getent group panelusers >/dev/null || groupadd --system panelusers
 getent group custompanel >/dev/null || groupadd --system custompanel
 id -u custompanel >/dev/null 2>&1 || useradd --system --no-create-home --gid custompanel --shell /usr/sbin/nologin custompanel
-id -u panelproxy >/dev/null 2>&1 || useradd --system --no-create-home --gid custompanel --shell /usr/sbin/nologin panelproxy
 usermod -g custompanel custompanel
-usermod -g custompanel panelproxy
 
 cat > /usr/local/bin/panel-hold <<'EOF'
 #!/usr/bin/env bash
@@ -176,7 +174,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=panelproxy
+User=custompanel
 Group=custompanel
 WorkingDirectory=$APP
 EnvironmentFile=$APP/.env
@@ -186,6 +184,7 @@ Restart=on-failure
 RestartSec=2
 PrivateTmp=true
 NoNewPrivileges=true
+UMask=0007
 LimitNOFILE=65535
 Nice=5
 
@@ -211,6 +210,7 @@ Restart=on-failure
 RestartSec=3
 PrivateTmp=true
 NoNewPrivileges=true
+UMask=0007
 Nice=10
 
 [Install]
@@ -235,6 +235,7 @@ Restart=on-failure
 RestartSec=3
 PrivateTmp=true
 NoNewPrivileges=true
+UMask=0007
 LimitNOFILE=8192
 Nice=5
 
@@ -242,12 +243,47 @@ Nice=5
 WantedBy=multi-user.target
 EOF
 
-runuser -u panelproxy -- test -x "$APP"
 runuser -u custompanel -- test -x "$APP"
-runuser -u panelproxy -- test -r "$APP/app/proxy_runtime.py"
+runuser -u custompanel -- test -r "$APP/app/proxy_runtime.py"
 runuser -u custompanel -- test -r "$APP/app/__init__.py"
-runuser -u panelproxy -- test -w "$APP/data"
 runuser -u custompanel -- test -w "$APP/data"
+
+# Create and verify the SQLite database using the same user that runs all
+# database-writing services. This prevents readonly database errors.
+set -a
+source "$APP/.env"
+set +a
+runuser -u custompanel -- env \
+  PYTHONPATH="$APP" \
+  CUSTOM_PANEL_SECRET_KEY="$CUSTOM_PANEL_SECRET_KEY" \
+  CUSTOM_PANEL_ADMIN_USERNAME="$CUSTOM_PANEL_ADMIN_USERNAME" \
+  CUSTOM_PANEL_ADMIN_PASSWORD_HASH="$CUSTOM_PANEL_ADMIN_PASSWORD_HASH" \
+  CUSTOM_PANEL_DATA_KEY="$CUSTOM_PANEL_DATA_KEY" \
+  CUSTOM_PANEL_DB="$CUSTOM_PANEL_DB" \
+  CUSTOM_PANEL_SERVER_HOST="$CUSTOM_PANEL_SERVER_HOST" \
+  CUSTOM_PANEL_INTERNAL_SSH_PORT="$CUSTOM_PANEL_INTERNAL_SSH_PORT" \
+  CUSTOM_PANEL_TCP_PORT_START="$CUSTOM_PANEL_TCP_PORT_START" \
+  CUSTOM_PANEL_TCP_PORT_END="$CUSTOM_PANEL_TCP_PORT_END" \
+  CUSTOM_PANEL_WS_PORT_START="$CUSTOM_PANEL_WS_PORT_START" \
+  CUSTOM_PANEL_WS_PORT_END="$CUSTOM_PANEL_WS_PORT_END" \
+  CUSTOM_PANEL_HELPER_SOCKET="$CUSTOM_PANEL_HELPER_SOCKET" \
+  "$APP/venv/bin/python" - <<'PY'
+from app.db import init_db, connect
+from app.config import Config
+init_db(Config.DB_PATH)
+with connect() as conn:
+    conn.execute("CREATE TABLE IF NOT EXISTS install_write_test(id INTEGER PRIMARY KEY, value TEXT)")
+    conn.execute("INSERT OR REPLACE INTO install_write_test(id,value) VALUES(1,'ok')")
+    conn.commit()
+    assert conn.execute("SELECT value FROM install_write_test WHERE id=1").fetchone()[0] == "ok"
+    conn.execute("DROP TABLE install_write_test")
+    conn.commit()
+print("SQLite write test: OK")
+PY
+
+chown -R custompanel:custompanel "$APP/data"
+find "$APP/data" -type d -exec chmod 770 {} +
+find "$APP/data" -type f -exec chmod 660 {} +
 
 ufw allow OpenSSH >/dev/null 2>&1 || true
 ufw allow 5000/tcp >/dev/null 2>&1 || true
@@ -274,6 +310,20 @@ for service in ssh custom-panel-helper custom-panel-proxy custom-panel-accountin
 done
 
 curl -fsS --max-time 10 http://127.0.0.1:5000/login >/dev/null
+runuser -u custompanel -- env PYTHONPATH="$APP" \
+  CUSTOM_PANEL_SECRET_KEY="$CUSTOM_PANEL_SECRET_KEY" \
+  CUSTOM_PANEL_ADMIN_USERNAME="$CUSTOM_PANEL_ADMIN_USERNAME" \
+  CUSTOM_PANEL_ADMIN_PASSWORD_HASH="$CUSTOM_PANEL_ADMIN_PASSWORD_HASH" \
+  CUSTOM_PANEL_DATA_KEY="$CUSTOM_PANEL_DATA_KEY" \
+  CUSTOM_PANEL_DB="$CUSTOM_PANEL_DB" \
+  CUSTOM_PANEL_SERVER_HOST="$CUSTOM_PANEL_SERVER_HOST" \
+  CUSTOM_PANEL_INTERNAL_SSH_PORT="$CUSTOM_PANEL_INTERNAL_SSH_PORT" \
+  CUSTOM_PANEL_TCP_PORT_START="$CUSTOM_PANEL_TCP_PORT_START" \
+  CUSTOM_PANEL_TCP_PORT_END="$CUSTOM_PANEL_TCP_PORT_END" \
+  CUSTOM_PANEL_WS_PORT_START="$CUSTOM_PANEL_WS_PORT_START" \
+  CUSTOM_PANEL_WS_PORT_END="$CUSTOM_PANEL_WS_PORT_END" \
+  CUSTOM_PANEL_HELPER_SOCKET="$CUSTOM_PANEL_HELPER_SOCKET" \
+  "$APP/venv/bin/python" -c "from app.db import init_db,connect; from app.config import Config; init_db(Config.DB_PATH); c=connect().__enter__(); c.execute('PRAGMA wal_checkpoint(PASSIVE)'); c.close()"
 ss -lnt | grep -qE '[:.]5000[[:space:]]'
 
 echo "Installed: http://$SERVER_HOST:5000"

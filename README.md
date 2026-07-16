@@ -1,27 +1,50 @@
-# Custom Panel — OpenSSH + SSH WebSocket
+# Custom Panel v11 — OpenSSH + SSH WebSocket
 
-A lightweight SSH panel for Ubuntu 22.04 and 24.04.
+v11 uses one unprivileged service account (`custompanel`) for the web panel,
+async proxy, accounting worker and SQLite database. The privileged Linux-account
+helper remains isolated as root.
+
+This prevents cross-user SQLite permission conflicts and fixes:
+
+```text
+attempt to write a readonly database
+```
+
+## Do OpenSSH and SSH WebSocket conflict?
+
+No. They use different public endpoints and both forward to the same internal
+OpenSSH server:
+
+```text
+OpenSSH user port 20000-24999 ─┐
+                               ├─> internal OpenSSH :2222
+WebSocket port 25000-29999 ────┘
+```
+
+The proxy tracks TCP and WebSocket online state separately and combines their
+RX/TX values for the user's total traffic.
 
 ## Features
 
-- OpenSSH TCP and SSH WebSocket.
-- User-specific TCP and WebSocket endpoints.
-- Accurate RX/TX accounting per endpoint.
-- Real online status for TCP and WebSocket separately.
-- Add, edit, pause, resume and delete users.
-- Change user password, quota and remaining days.
-- Enable or disable TCP/WS per user.
-- Automatic quota and time enforcement.
-- JSON backup and restore.
-- Encrypted user passwords at rest.
-- Hashed panel administrator password.
-- Login rate limiting.
-- One asyncio proxy process and one Gunicorn worker.
-- Designed for low-memory VPS servers.
+- OpenSSH TCP
+- SSH WebSocket
+- Enable either or both per user
+- Add, edit, pause, resume and delete
+- Change password, quota and remaining days
+- Accurate endpoint RX/TX accounting
+- Separate TCP/WS online status
+- Automatic quota/time suspension
+- Backup and restore
+- Encrypted user passwords
+- Hashed panel administrator password
+- Login rate limiting
+- One asyncio proxy process
+- One Gunicorn worker
+- Dark responsive dashboard
 
 ## Install
 
-Upload these files directly to the root of your GitHub repository.
+Upload all ZIP contents to the root of the GitHub repository, then run:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/rima0222/ss/main/install.sh -o /tmp/install.sh
@@ -29,13 +52,16 @@ bash -n /tmp/install.sh
 sudo bash /tmp/install.sh
 ```
 
-## Panel credentials
+The installer performs an SQLite write test before starting services and a
+second health check after startup.
+
+## Credentials
 
 ```bash
 sudo bash /etc/custom-panel/show-credentials.sh
 ```
 
-Change the panel administrator password:
+Change administrator password:
 
 ```bash
 sudo bash /etc/custom-panel/reset-admin-password.sh 'NEW_STRONG_PASSWORD'
@@ -50,11 +76,8 @@ sudo bash /etc/custom-panel/diagnose.sh
 ## Ports
 
 - Panel: 5000/tcp
-- User OpenSSH endpoints: 20000-24999/tcp
-- User WebSocket endpoints: 25000-29999/tcp
+- OpenSSH endpoints: 20000-24999/tcp
+- WebSocket endpoints: 25000-29999/tcp
 
-Each user must use the endpoint assigned to that account. Traffic is attributed
-to the endpoint because the SSH username is inside the encrypted SSH session.
-
-Shell and Python syntax are validated in the release build. Actual SSH and
-WebSocket client tests must be performed after installation on the target VPS.
+Static Shell and Python syntax validation has been completed. Real client and
+load tests must still be performed on the target VPS.
