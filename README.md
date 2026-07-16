@@ -30,3 +30,12 @@ before running the installer.
 ## Backup
 
 Restore accepts both the old list-shaped JSON backup and the new versioned format.
+
+## v1.1 update
+
+- Multiple protocols can be created for one user in a single operation.
+- Interrupted SSH user creation is recovered idempotently.
+- WireGuard forwarding rules are added through UFW.
+- WireGuard peers are restored automatically after reboot.
+- Dashboard displays live online state plus WireGuard/OpenVPN receive and transmit counters.
+- Existing installations update with the same one-line installer.

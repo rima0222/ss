@@ -8,7 +8,7 @@ SERVER_HOST="${PANEL_SERVER_HOST:-$(curl -4fsS --max-time 10 https://api.ipify.o
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 apt-get install -y python3 python3-venv git curl ca-certificates openssh-server sqlite3 \
-  wireguard-tools openvpn easy-rsa strongswan-swanctl strongswan-pki libcharon-extra-plugins \
+  wireguard-tools openvpn easy-rsa strongswan-swanctl strongswan-pki charon-systemd libcharon-extra-plugins \
   qrencode ufw
 
 systemctl enable --now ssh
@@ -145,8 +145,23 @@ pools { vpn4 { addrs = 10.68.0.0/24; dns = 1.1.1.1 } }
 include conf.d/custom-panel-users.conf
 EOF
 [[ -f /etc/swanctl/conf.d/custom-panel-users.conf ]] || echo 'secrets { }' > /etc/swanctl/conf.d/custom-panel-users.conf
-systemctl enable --now strongswan || systemctl enable --now strongswan-swanctl || true
+systemctl enable --now strongswan.service 2>/dev/null || systemctl enable --now charon-systemd.service 2>/dev/null || true
 swanctl --load-all >/dev/null 2>&1 || true
+
+cat > /etc/systemd/system/custom-panel-wg-restore.service <<EOF
+[Unit]
+Description=Restore Custom Panel WireGuard peers
+After=wg-quick@wg0.service
+Requires=wg-quick@wg0.service
+
+[Service]
+Type=oneshot
+ExecStart=$APP_DIR/venv/bin/python $APP_DIR/app/wg_restore.py
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
 
 cat > /etc/systemd/system/custom-panel.service <<EOF
 [Unit]
@@ -176,6 +191,12 @@ EOF
 # Minimal Nginx-free public proxy using systemd socket is intentionally avoided. Bind panel via firewall-local port.
 sed -i 's/--bind 127.0.0.1:5000/--bind 0.0.0.0:5000/' /etc/systemd/system/custom-panel.service
 
+# Permit routed VPN traffic through UFW without changing the global forward policy.
+WAN_IF=$(ip route show default | awk '/default/ {print $5; exit}')
+ufw route allow in on wg0 out on "$WAN_IF" >/dev/null 2>&1 || true
+ufw route allow in on tun0 out on "$WAN_IF" >/dev/null 2>&1 || true
+ufw route allow from 10.68.0.0/24 to any >/dev/null 2>&1 || true
+
 ufw allow OpenSSH >/dev/null || true
 ufw allow 5000/tcp >/dev/null || true
 ufw allow 51820/udp >/dev/null || true
@@ -183,7 +204,10 @@ ufw allow 1194/udp >/dev/null || true
 ufw allow 500,4500/udp >/dev/null || true
 ufw --force enable >/dev/null || true
 systemctl daemon-reload
+systemctl enable --now custom-panel-wg-restore.service
+systemctl restart custom-panel-wg-restore.service || true
 systemctl enable --now custom-panel
+systemctl restart custom-panel
 
 echo "Installed: http://$SERVER_HOST:5000"
 echo "Credentials: $APP_DIR/admin-credentials.txt"

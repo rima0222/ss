@@ -13,9 +13,15 @@ class SSH:
     name='ssh'
     def create(self,u):
         valid_user(u['username'])
-        try: pwd.getpwnam(u['username'])
-        except KeyError: run(['useradd','-M','-s','/usr/sbin/nologin',u['username']])
-        run(['chpasswd'], f"{u['username']}:{u['password']}\n"); run(['usermod','-U',u['username']])
+        try:
+            pwd.getpwnam(u['username'])
+            # Adopt a leftover panel account from an interrupted installation/create operation.
+            run(['usermod','-s','/usr/sbin/nologin',u['username']])
+        except KeyError:
+            run(['useradd','-M','-s','/usr/sbin/nologin',u['username']])
+        run(['chpasswd'], f"{u['username']}:{u['password']}\n")
+        run(['usermod','-U',u['username']])
+    update=create
     def pause(self,u): run(['usermod','-L',u['username']]); run(['pkill','-KILL','-u',u['username']],check=False)
     def resume(self,u): run(['usermod','-U',u['username']])
     def delete(self,u): run(['pkill','-KILL','-u',u['username']],check=False); run(['userdel','-r',u['username']],check=False)

@@ -32,7 +32,8 @@ def add():
     validate_csrf(); created=[]
     try:
         name=request.form['username'].strip(); pw=request.form['password']; limit=float(request.form['limit_gb']); days=int(request.form['days'])
-        prots=[p for p in request.form.getlist('protocols') if p in REGISTRY] or ['ssh']
+        if get_user(name): raise ValueError('این نام کاربری قبلاً در پنل ثبت شده است.')
+        prots=list(dict.fromkeys(p for p in request.form.getlist('protocols') if p in REGISTRY)) or ['ssh']
         exp=(dt.date.today()+dt.timedelta(days=days)).isoformat()
         u={'username':name,'password':pw,'limit_gb':limit,'used_gb':0,'expire_date':exp,'status':'Active','paused':0,'initial_gb':limit,'initial_days':days}
         for p in prots: REGISTRY[p].create(u); created.append(p)
