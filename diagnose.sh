@@ -9,7 +9,7 @@ echo "=== Permissions ==="
 namei -l "$APP" || true
 ls -ld "$APP" "$APP/data" /run/custom-panel || true
 echo "=== Services ==="
-for s in ssh custom-panel-helper custom-panel-proxy custom-panel-accounting custom-panel; do
+for s in ssh custom-panel-sshd custom-panel-helper custom-panel-proxy custom-panel-accounting custom-panel; do
   systemctl status "$s" --no-pager -l || true
 done
 echo "=== Logs ==="
@@ -51,3 +51,16 @@ echo
 echo "=== Database counters ==="
 sqlite3 /etc/custom-panel/data/panel.db \
   "SELECT username,rx_bytes,tx_bytes,online_tcp,online_ws FROM users;" 2>/dev/null || true
+
+
+echo "=== Gateway validation ==="
+echo "Managed users must use assigned ports, never port 22."
+ss -lnt | grep -E '(:22 |127\.0\.0\.1:2222|:5000|:2[0-9]{4})' || true
+echo "=== Live snapshot freshness ==="
+python3 - <<'PY' || true
+import json, time
+p="/run/custom-panel/live.json"
+d=json.load(open(p))
+print("age_seconds:", int(time.time())-int(d.get("updated_at",0)))
+print(json.dumps(d, indent=2))
+PY

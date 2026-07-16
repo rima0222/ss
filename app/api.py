@@ -51,10 +51,12 @@ def stats():
             online_users += 1
 
         total_used += used
+        limit_bytes = int(user["limit_bytes"] or 0)
         response_users[user["username"]] = {
             "used": human_bytes(used),
+            "quota": human_bytes(limit_bytes) if limit_bytes > 0 else "نامحدود",
             "used_bytes": used,
-            "limit_bytes": int(user["limit_bytes"] or 0),
+            "limit_bytes": limit_bytes,
             "online_tcp": tcp_online,
             "online_ws": ws_online,
             "remaining_days": int(user["remaining_days"] or 0),
@@ -70,5 +72,6 @@ def stats():
         "total_used": human_bytes(total_used),
         "memory_percent": memory_percent(),
         "load": round(os.getloadavg()[0], 2),
+        "gateway_live": bool(live),
         "users": response_users,
     })

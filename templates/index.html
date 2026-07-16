@@ -36,6 +36,15 @@
 <button class="btn primary full">ساخت کاربر</button></form></article>
 
 <article class="panel glass"><div class="panel-title"><div>
+<span class="eyebrow">ADMIN</span><h2>تغییر ورود مدیر</h2></div><span class="badge purple">SECURE</span></div>
+<form action="/admin/credentials" method="post" class="stack">
+<input type="hidden" name="_csrf" value="{{csrf_token()}}">
+<input name="admin_username" placeholder="نام کاربری جدید مدیر" required>
+<input name="admin_password" type="password" minlength="10" placeholder="رمز جدید حداقل ۱۰ کاراکتر" required>
+<button class="btn primary">ذخیره و خروج</button>
+</form></article>
+
+<article class="panel glass"><div class="panel-title"><div>
 <span class="eyebrow">BACKUP</span><h2>بازیابی اطلاعات</h2></div><span class="badge purple">JSON</span></div>
 <form action="/backup/restore" method="post" enctype="multipart/form-data" class="stack">
 <input type="hidden" name="_csrf" value="{{csrf_token()}}">
@@ -56,7 +65,7 @@
 <td><div class="chips">{% if u.tcp_enabled %}<span class="chip cyan">OpenSSH : {{u.tcp_port}}</span>{% endif %}{% if u.ws_enabled %}<span class="chip purple">WS : {{u.ws_port}}</span>{% endif %}</div></td>
 <td>{% if u.paused %}<span class="status paused">متوقف</span>{% else %}<span class="status active">فعال</span>{% endif %}</td>
 <td><div class="online-stack">{% if u.tcp_enabled %}<span data-online-tcp="{{u.username}}" class="online">○ TCP</span>{% endif %}{% if u.ws_enabled %}<span data-online-ws="{{u.username}}" class="online">○ WS</span>{% endif %}</div></td>
-<td><div class="traffic"><strong data-used="{{u.username}}">{{u.used_human}}</strong><div class="progress"><i data-progress="{{u.username}}" style="width:{{u.percent}}%"></i></div></div></td>
+<td><div class="traffic"><strong><span data-used="{{u.username}}">{{u.used_human}}</span> / <span data-quota="{{u.username}}">{{u.limit_gb}} GB</span></strong><div class="progress"><i data-progress="{{u.username}}" style="width:{{u.percent}}%"></i></div></div></td>
 <td><span data-days="{{u.username}}" class="days">{{u.remaining_days}} روز</span></td>
 <td><div class="actions">
 <a class="action" href="/users/{{u.username}}/config">کانفیگ</a>

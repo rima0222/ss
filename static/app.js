@@ -13,6 +13,8 @@ async function refreshStats(){
   for(const [name,item] of Object.entries(data.users||{})){
    const used=document.querySelector(`[data-used="${CSS.escape(name)}"]`);
    if(used)used.textContent=item.used;
+   const quota=document.querySelector(`[data-quota="${CSS.escape(name)}"]`);
+   if(quota)quota.textContent=item.quota;
    const tcp=document.querySelector(`[data-online-tcp="${CSS.escape(name)}"]`);
    if(tcp){tcp.textContent=item.online_tcp?'● TCP':'○ TCP';tcp.classList.toggle('active',item.online_tcp);}
    const ws=document.querySelector(`[data-online-ws="${CSS.escape(name)}"]`);

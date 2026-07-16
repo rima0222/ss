@@ -40,14 +40,26 @@ class Runtime:
         tcp, ws = {}, {}
         for user in users:
             if user["tcp_enabled"] and user["tcp_port"]:
-                tcp[int(user["tcp_port"])] = Endpoint(
+                endpoint = Endpoint(
                     int(user["id"]), user["username"], "tcp", int(user["tcp_port"])
                 )
+                tcp[endpoint.port] = endpoint
+                self.state.setdefault((endpoint.user_id, "tcp"), {
+                    "user_id": endpoint.user_id, "username": endpoint.username,
+                    "kind": "tcp", "rx_pending": 0, "tx_pending": 0,
+                    "rx_live": 0, "tx_live": 0, "online": 0, "last_seen": 0,
+                })
             if user["ws_enabled"] and user["ws_port"]:
-                ws[int(user["ws_port"])] = Endpoint(
+                endpoint = Endpoint(
                     int(user["id"]), user["username"], "ws",
                     int(user["ws_port"]), user["ws_token"]
                 )
+                ws[endpoint.port] = endpoint
+                self.state.setdefault((endpoint.user_id, "ws"), {
+                    "user_id": endpoint.user_id, "username": endpoint.username,
+                    "kind": "ws", "rx_pending": 0, "tx_pending": 0,
+                    "rx_live": 0, "tx_live": 0, "online": 0, "last_seen": 0,
+                })
         return tcp, ws
 
     async def change(self, endpoint, rx=0, tx=0, online_delta=0):
@@ -280,20 +292,28 @@ class Runtime:
                     item["rx_pending"] += rx
                     item["tx_pending"] += tx
 
-    async def writer_loop(self):
+    async def snapshot_loop(self):
         while not self.stop.is_set():
             try:
                 await self.snapshot()
+            except Exception:
+                pass
+            try:
+                await asyncio.wait_for(self.stop.wait(), timeout=0.5)
+            except asyncio.TimeoutError:
+                pass
+
+    async def database_loop(self):
+        while not self.stop.is_set():
+            try:
                 await self.flush_db()
             except Exception:
                 pass
             try:
-                await asyncio.wait_for(self.stop.wait(), timeout=1)
+                await asyncio.wait_for(self.stop.wait(), timeout=2)
             except asyncio.TimeoutError:
                 pass
-
         try:
-            await self.snapshot()
             await self.flush_db()
         except Exception:
             pass
@@ -311,7 +331,7 @@ class Runtime:
             loop.add_signal_handler(sig, self.stop.set)
 
         await self.reconcile()
-        await asyncio.gather(self.reconcile_loop(), self.writer_loop())
+        await asyncio.gather(self.reconcile_loop(), self.snapshot_loop(), self.database_loop())
 
 async def main():
     init_db(Config.DB_PATH)

@@ -49,6 +49,12 @@ CREATE TABLE IF NOT EXISTS metadata(
   value TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS admin_settings(
+  id INTEGER PRIMARY KEY CHECK(id=1),
+  username TEXT NOT NULL DEFAULT 'admin',
+  password_hash TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_users_runtime ON users(paused,status,remaining_days);
 CREATE INDEX IF NOT EXISTS idx_users_tcp_port ON users(tcp_port);
 CREATE INDEX IF NOT EXISTS idx_users_ws_port ON users(ws_port);

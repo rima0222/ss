@@ -1,40 +1,45 @@
-# Custom Panel v12 — Live OpenSSH + WebSocket Accounting
+# Custom Panel v13 — Enforced SSH Gateway
 
-v12 replaces the previous dashboard accounting path.
+v13 changes the architecture so managed users cannot bypass accounting.
 
-## Why v11 could show Offline and 0 B
+## Architecture
 
-The proxy kept counters in memory and the panel only read SQLite. If a database
-flush was delayed or failed, the connection continued working but the panel
-could still display Offline and zero traffic.
+```text
+OpenSSH TCP ports 20000-24999 ─┐
+                               ├─> Async Gateway ─> OpenSSH 127.0.0.1:2222
+WebSocket ports 25000-29999 ───┘
 
-## v12 accounting
+Server administration remains on normal SSH port 22.
+```
 
-The proxy now produces two outputs:
+Managed users are accepted only by the internal OpenSSH instance on localhost.
+They must connect through their assigned TCP or WebSocket endpoint.
 
-1. A live atomic snapshot at `/run/custom-panel/live.json`, updated every second.
-2. Batched persistent SQLite counters with retry handling.
+## Why this is more reliable
 
-The API combines the saved SQLite total with the current unflushed byte delta.
-Online status comes directly from the live proxy snapshot.
+- Every managed byte crosses the gateway.
+- Online state is the gateway's active connection count.
+- A live atomic snapshot is updated every 0.5 seconds.
+- SQLite persistence is batched every 2 seconds.
+- The dashboard overlays pending bytes on stored totals.
+- The dashboard displays `used / quota`.
+- OpenSSH and WebSocket use separate listeners and cannot bind the same port.
+- Direct port-22 access does not accept managed panel users through the internal
+  panel SSH configuration.
 
-This gives:
+## Features
 
-- Online status within about one second.
-- Traffic updates within about one second.
-- Persistent totals after restart.
-- Low SQLite write frequency.
-- No process scan, `who`, `ss`, `netstat`, iptables accounting or per-user worker.
-
-## Protocol isolation
-
-OpenSSH TCP and SSH WebSocket use separate public endpoint ranges:
-
-- OpenSSH: `20000-24999/tcp`
-- WebSocket: `25000-29999/tcp`
-
-Both forward to internal OpenSSH on port 2222 and do not bind the same public
-port, so they do not conflict.
+- OpenSSH TCP and SSH WebSocket
+- Add, edit, pause, resume and delete
+- Change password, quota, remaining days and enabled methods
+- Separate TCP/WS online state
+- Accurate combined RX/TX
+- Automatic quota and time suspension
+- Backup and restore
+- Change panel administrator username/password from the panel
+- Encrypted user passwords and hashed administrator password
+- One asyncio gateway process
+- One Gunicorn worker
 
 ## Install
 
@@ -56,8 +61,11 @@ sudo bash /etc/custom-panel/show-credentials.sh
 sudo bash /etc/custom-panel/diagnose.sh
 ```
 
-The diagnostic output includes the live JSON snapshot and stored database
-counters.
+## Important client rule
 
-Shell and Python syntax are validated. Real OpenSSH and WebSocket traffic must
-still be tested on the target VPS.
+Use the TCP port or WebSocket URL downloaded from the user's Config button.
+Connecting to server port 22 bypasses the user's assigned gateway endpoint and
+is reserved for server administration.
+
+Static Shell and Python syntax have been validated. Real network and load tests
+must be completed on the target VPS.

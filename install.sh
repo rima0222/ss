@@ -19,12 +19,13 @@ backup_old(){
 }
 
 if [[ "$CLEAN" == "1" ]]; then
-  systemctl disable --now custom-panel custom-panel-proxy custom-panel-accounting custom-panel-helper 2>/dev/null || true
+  systemctl disable --now custom-panel custom-panel-proxy custom-panel-accounting custom-panel-helper custom-panel-sshd 2>/dev/null || true
   backup_old
   rm -f /etc/systemd/system/custom-panel.service
   rm -f /etc/systemd/system/custom-panel-proxy.service
   rm -f /etc/systemd/system/custom-panel-accounting.service
   rm -f /etc/systemd/system/custom-panel-helper.service
+  rm -f /etc/systemd/system/custom-panel-sshd.service
   rm -rf "$APP"
   systemctl daemon-reload
 fi
@@ -53,25 +54,58 @@ EOF
 chmod 755 /usr/local/bin/panel-hold
 grep -qxF '/usr/local/bin/panel-hold' /etc/shells || echo '/usr/local/bin/panel-hold' >> /etc/shells
 
-cat > /etc/ssh/sshd_config.d/99-custom-panel.conf <<'EOF'
-Port 22
+# Keep the normal SSH daemon on port 22 for server administration.
+rm -f /etc/ssh/sshd_config.d/99-custom-panel.conf
+sshd -t
+systemctl enable --now ssh
+systemctl restart ssh
+
+# Managed users use a separate OpenSSH instance bound only to localhost.
+cat > /etc/ssh/sshd_config_custom_panel <<'EOF'
 Port 2222
-ListenAddress 0.0.0.0
+ListenAddress 127.0.0.1
+Protocol 2
+HostKey /etc/ssh/ssh_host_ed25519_key
+HostKey /etc/ssh/ssh_host_rsa_key
+UsePAM yes
 PasswordAuthentication yes
 KbdInteractiveAuthentication no
-PermitRootLogin prohibit-password
+PermitRootLogin no
+AllowGroups panelusers
+PermitEmptyPasswords no
+X11Forwarding no
+AllowAgentForwarding no
+AllowTcpForwarding yes
+GatewayPorts no
+PermitTunnel no
+PrintMotd no
+PidFile /run/sshd-custom-panel.pid
+Subsystem sftp internal-sftp
 
 Match Group panelusers
     ForceCommand /usr/local/bin/panel-hold
     PermitTTY no
-    X11Forwarding no
-    AllowAgentForwarding no
-    AllowTcpForwarding yes
-    GatewayPorts no
 EOF
-sshd -t
-systemctl enable --now ssh
-systemctl restart ssh
+
+/usr/sbin/sshd -t -f /etc/ssh/sshd_config_custom_panel
+
+cat > /etc/systemd/system/custom-panel-sshd.service <<'EOF'
+[Unit]
+Description=Custom Panel internal OpenSSH
+After=network.target
+Before=custom-panel-proxy.service
+
+[Service]
+Type=notify
+ExecStart=/usr/sbin/sshd -D -f /etc/ssh/sshd_config_custom_panel
+ExecReload=/bin/kill -HUP $MAINPID
+KillMode=process
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+EOF
 
 git clone --depth=1 "$REPO" "$APP"
 test -f "$APP/app/__init__.py"
@@ -291,12 +325,19 @@ ufw --force enable >/dev/null 2>&1 || true
 
 systemctl daemon-reload
 systemctl reset-failed custom-panel-helper custom-panel-proxy custom-panel-accounting custom-panel 2>/dev/null || true
-systemctl enable custom-panel-helper custom-panel-proxy custom-panel-accounting custom-panel >/dev/null
+systemctl enable custom-panel-sshd custom-panel-helper custom-panel-proxy custom-panel-accounting custom-panel >/dev/null
 
+systemctl start custom-panel-sshd
+sleep 1
 systemctl start custom-panel-helper
 sleep 1
 systemctl start custom-panel-proxy
 sleep 2
+ss -lnt | grep -q "127.0.0.1:2222" || {
+  journalctl -u custom-panel-sshd -n 120 --no-pager || true
+  echo "Internal OpenSSH is not listening on localhost:2222."
+  exit 1
+}
 test -f /run/custom-panel/live.json || {
   journalctl -u custom-panel-proxy -n 120 --no-pager || true
   echo "Live accounting snapshot was not created."
@@ -306,7 +347,7 @@ systemctl start custom-panel-accounting
 systemctl start custom-panel
 sleep 3
 
-for service in ssh custom-panel-helper custom-panel-proxy custom-panel-accounting custom-panel; do
+for service in ssh custom-panel-sshd custom-panel-helper custom-panel-proxy custom-panel-accounting custom-panel; do
   if ! systemctl is-active --quiet "$service"; then
     journalctl -u "$service" -n 120 --no-pager || true
     echo "Service failed: $service"
