@@ -1,3 +1,2 @@
-#!/usr/bin/env bash
-set -Eeuo pipefail
+#!/bin/bash
 cat /etc/custom-panel/admin-credentials.txt
