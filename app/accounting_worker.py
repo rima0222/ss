@@ -26,10 +26,10 @@ def helper_pause(username):
     if not result.get("ok"):
         raise RuntimeError(result.get("error", "helper failed"))
 
-def live_users():
+def live_usage():
     try:
         payload = json.loads(Path(Config.LIVE_PATH).read_text(encoding="utf-8"))
-        if int(time.time()) - int(payload.get("updated_at", 0)) > 3:
+        if int(time.time()) - int(payload.get("updated_at", 0)) > 5:
             return {}
         return payload.get("users", {})
     except Exception:
@@ -64,22 +64,17 @@ def apply_rollover():
         conn.commit()
 
 def enforce():
-    live = live_users()
+    live = live_usage()
     with connect() as conn:
         users = [dict(row) for row in conn.execute("SELECT * FROM users")]
         for user in users:
             current = live.get(user["username"], {})
             pending = int(current.get("pending_rx", 0)) + int(current.get("pending_tx", 0))
-            saved = int(user["rx_bytes"] or 0) + int(user["tx_bytes"] or 0)
-            used = saved + pending
-
-            over_quota = (
-                int(user["limit_bytes"] or 0) > 0
-                and used >= int(user["limit_bytes"])
-            )
+            used = int(user["rx_bytes"] or 0) + int(user["tx_bytes"] or 0) + pending
+            over = int(user["limit_bytes"] or 0) > 0 and used >= int(user["limit_bytes"])
             expired = int(user["remaining_days"] or 0) <= 0
 
-            if not user["paused"] and (over_quota or expired):
+            if not user["paused"] and (over or expired):
                 try:
                     helper_pause(user["username"])
                 except Exception:
@@ -99,7 +94,7 @@ def main():
             enforce()
         except Exception:
             log.exception("Accounting cycle failed")
-        time.sleep(3)
+        time.sleep(5)
 
 if __name__ == "__main__":
     main()
