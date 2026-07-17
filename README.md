@@ -1,71 +1,144 @@
-# Custom Panel v13 — Enforced SSH Gateway
+# Custom Panel Engineered v1
 
-v13 changes the architecture so managed users cannot bypass accounting.
+پنل مدیریت سبک و ماژولار برای **OpenSSH TCP** و **SSH WebSocket** روی Ubuntu 22.04/24.04.
 
-## Architecture
+## معماری
 
 ```text
-OpenSSH TCP ports 20000-24999 ─┐
-                               ├─> Async Gateway ─> OpenSSH 127.0.0.1:2222
-WebSocket ports 25000-29999 ───┘
-
-Server administration remains on normal SSH port 22.
+Client
+ ├─ TCP اختصاصی کاربر (20000–24999)
+ └─ WebSocket مشترک (8080) با Path اختصاصی
+              │
+              ▼
+      Async Gateway واحد
+              │
+              ▼
+OpenSSH داخلی با پورت اختصاصی هر کاربر (localhost)
 ```
 
-Managed users are accepted only by the internal OpenSSH instance on localhost.
-They must connect through their assigned TCP or WebSocket endpoint.
+هر پورت داخلی فقط نام کاربری مربوط به همان حساب را می‌پذیرد. بنابراین یک کاربر نمی‌تواند با پورت شخص دیگری وارد شود و مصرف به حساب اشتباه ثبت شود.
 
-## Why this is more reliable
+### Online دقیق
 
-- Every managed byte crosses the gateway.
-- Online state is the gateway's active connection count.
-- A live atomic snapshot is updated every 0.5 seconds.
-- SQLite persistence is batched every 2 seconds.
-- The dashboard overlays pending bytes on stored totals.
-- The dashboard displays `used / quota`.
-- OpenSSH and WebSocket use separate listeners and cannot bind the same port.
-- Direct port-22 access does not accept managed panel users through the internal
-  panel SSH configuration.
+Online اصلی از `PAM open_session / close_session` بعد از احراز هویت موفق ثبت می‌شود. Agent همچنین پردازش Session را هر دو ثانیه بررسی می‌کند تا بعد از Restart یا از دست رفتن Event وضعیت اصلاح شود.
 
-## Features
+### مصرف دقیق
 
-- OpenSSH TCP and SSH WebSocket
-- Add, edit, pause, resume and delete
-- Change password, quota, remaining days and enabled methods
-- Separate TCP/WS online state
-- Accurate combined RX/TX
-- Automatic quota and time suspension
-- Backup and restore
-- Change panel administrator username/password from the panel
-- Encrypted user passwords and hashed administrator password
-- One asyncio gateway process
-- One Gunicorn worker
+Gateway هر دو جهت را اندازه می‌گیرد، اما **فقط بایت‌های Backend → Client (دانلود/Receive کاربر)** از سهمیه کم می‌شود. Upload جداگانه برای عیب‌یابی نگه‌داری می‌شود ولی مصرف حجمی نیست.
 
-## Install
+Metricها هر یک ثانیه در یک Transaction به SQLite WAL نوشته می‌شوند. تا زمانی که Manager تأیید نکند، Gateway شمارنده‌های محلی را صفر نمی‌کند؛ بنابراین در قطع موقت Manager، بایت‌ها از بین نمی‌روند.
+
+## امکانات
+
+- OpenSSH مستقیم و SSH WebSocket
+- ساخت، ویرایش و حذف کاربر
+- Pause/Resume با توقف زمان در حالت Pause
+- تغییر رمز، حجم و زمان
+- نمایش Online احراز‌شده
+- نمایش Connectionهای TCP/WS
+- محاسبه فقط دانلود کاربر
+- قطع خودکار در پایان حجم یا زمان
+- ریست مصرف
+- دانلود اطلاعات اتصال
+- Backup و Restore
+- تغییر Username و Password مدیر از داخل پنل
+- نصب Clean و حذف کاربران پنل قبلی
+- Admin جدید در هر نصب تازه
+- یک Gateway برای همه کاربران؛ بدون Process جدا برای هر کاربر
+- SQLite WAL و Gunicorn تک‌Worker برای VPS ضعیف
+
+## نصب یک‌خطی
+
+محتویات ZIP را مستقیماً در ریشه Repository زیر قرار بده:
+
+```text
+https://github.com/rima0222/ss
+```
+
+سپس:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/rima0222/ss/main/install.sh -o /tmp/install.sh
-bash -n /tmp/install.sh
-sudo bash /tmp/install.sh
+curl -fsSL https://raw.githubusercontent.com/rima0222/ss/main/install.sh | sudo bash
 ```
 
-## Credentials
+برای Repository دیگر:
 
 ```bash
-sudo bash /etc/custom-panel/show-credentials.sh
+curl -fsSL https://raw.githubusercontent.com/USER/REPO/main/install.sh |
+sudo CUSTOM_PANEL_REPO_URL=https://github.com/USER/REPO.git bash
 ```
 
-## Diagnostics
+## اطلاعات ورود
+
+در پایان نصب نمایش داده می‌شود. بعداً:
 
 ```bash
-sudo bash /etc/custom-panel/diagnose.sh
+sudo bash /opt/custom-panel/show-credentials.sh
 ```
 
-## Important client rule
+یا:
 
-Use the TCP port or WebSocket URL downloaded from the user's Config button.
-Connecting to server port 22 bypasses the user's assigned gateway endpoint and
-is reserved for server administration.
+```bash
+sudo cat /etc/custom-panel/admin-credentials.txt
+```
 
-Static Shell and Python syntax have been validated. Real network and load tests
-must be completed on the target VPS.
+## تغییر رمز مدیر از SSH
+
+رمز تصادفی:
+
+```bash
+sudo bash /opt/custom-panel/reset-admin-password.sh
+```
+
+رمز و Username دلخواه:
+
+```bash
+sudo bash /opt/custom-panel/reset-admin-password.sh 'NEW_STRONG_PASSWORD' 'newadmin'
+```
+
+از داخل پنل نیز قابل تغییر است.
+
+## وضعیت و تشخیص خطا
+
+```bash
+sudo bash /opt/custom-panel/diagnose.sh
+```
+
+یا:
+
+```bash
+sudo systemctl status custom-panel-sshd --no-pager -l
+sudo systemctl status custom-panel-helper --no-pager -l
+sudo systemctl status custom-panel-manager --no-pager -l
+sudo systemctl status custom-panel-gateway --no-pager -l
+sudo systemctl status custom-panel-web --no-pager -l
+```
+
+## حذف کامل
+
+```bash
+sudo bash /opt/custom-panel/uninstall.sh
+```
+
+Installer و Uninstaller فقط کاربران دارای Group/Marker اختصاصی پنل را حذف می‌کنند و حساب مدیریت VPS را دست‌نخورده نگه می‌دارند.
+
+## پورت‌ها
+
+- پنل: `5000/tcp`
+- SSH WebSocket: `8080/tcp`
+- OpenSSH کاربران: `20000–24999/tcp`
+- Backend داخلی: `30000–34999` فقط روی localhost
+
+## نکتهٔ Ping
+
+Gateway فشرده‌سازی WebSocket را غیرفعال می‌کند، `TCP_NODELAY` فعال است و Backend روی localhost قرار دارد. این طراحی سربار نرم‌افزاری را پایین نگه می‌دارد؛ اما Ping اصلی همچنان به فاصلهٔ سرور، Route و ISP وابسته است.
+
+## تست انجام‌شده روی Release
+
+- بررسی Syntax تمام فایل‌های Python
+- بررسی `bash -n` برای Scriptها
+- بررسی ساختار Package و فایل‌های ضروری
+- تست Schema SQLite و عملیات Admin
+- تست Unit برای شمارش دانلود/آپلود و ACK شمارنده‌ها
+
+تست اتصال واقعی OpenSSH، WebSocket، PAM و فشار هم‌زمان باید بعد از نصب روی VPS انجام شود، چون به systemd، PAM، sshd و شبکهٔ واقعی نیاز دارد.
