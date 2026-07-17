@@ -1,1 +1,1 @@
-# quota enforcement implementation
+# quota and expiry enforcement module

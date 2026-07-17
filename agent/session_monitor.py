@@ -1,1 +1,2 @@
-# PAM session monitor implementation
+# v15 session monitor
+# PAM/session integration module
