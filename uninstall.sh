@@ -1,48 +1,36 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+[[ $EUID -eq 0 ]] || { echo "Run as root"; exit 1; }
 
-APP_DIR="/etc/custom-panel"
-
-if [[ "${EUID}" -ne 0 ]]; then
-  echo "Run as root: sudo bash uninstall.sh"
-  exit 1
-fi
-
-echo "This removes Custom Panel services/configuration."
-echo "A rescue copy is preserved under /root."
-read -r -p "Type REMOVE to continue: " answer
-[[ "${answer}" == "REMOVE" ]] || { echo "Cancelled."; exit 1; }
-
-stamp="$(date -u +%Y%m%d-%H%M%S)"
-rescue="/root/custom-panel-rescue-${stamp}"
-mkdir -p "${rescue}"
-
-if [[ -d "${APP_DIR}" ]]; then
-  cp -a "${APP_DIR}/data" "${rescue}/" 2>/dev/null || true
-  cp -a "${APP_DIR}/backups" "${rescue}/" 2>/dev/null || true
-  cp -a "${APP_DIR}/.env" "${rescue}/" 2>/dev/null || true
-  cp -a "${APP_DIR}/admin-credentials.txt" "${rescue}/" 2>/dev/null || true
-fi
-
-systemctl disable --now custom-panel.service 2>/dev/null || true
-
-rm -f /etc/systemd/system/custom-panel.service
-rm -rf "${APP_DIR}"
-rm -f /etc/swanctl/conf.d/custom-panel.conf
-rm -f /etc/swanctl/conf.d/custom-panel-users.conf
-
-ufw --force delete allow 5000/tcp >/dev/null 2>&1 || true
-ufw --force delete allow 500/udp >/dev/null 2>&1 || true
-ufw --force delete allow 4500/udp >/dev/null 2>&1 || true
-
-
-WAN_IF=$(ip route show default | awk '/default/ {print $5; exit}')
-while iptables -t nat -C POSTROUTING -s 10.67.0.0/24 -o "$WAN_IF" -j MASQUERADE 2>/dev/null; do
-  iptables -t nat -D POSTROUTING -s 10.67.0.0/24 -o "$WAN_IF" -j MASQUERADE || break
+for service in custom-panel-web custom-panel-gateway custom-panel-manager custom-panel-helper custom-panel-sshd; do
+  systemctl disable --now "$service" 2>/dev/null || true
+  rm -f "/etc/systemd/system/$service.service"
 done
 
-systemctl daemon-reload
-systemctl reset-failed 2>/dev/null || true
+managed_users="$(
+  {
+    getent group cpusers | awk -F: '{gsub(/,/, "\n", $4); print $4}'
+    getent group panelusers | awk -F: '{gsub(/,/, "\n", $4); print $4}'
+    getent passwd | awk -F: '$5=="custom-panel-managed"{print $1}'
+  } | sed '/^$/d' | sort -u
+)"
 
-tar -C /root -czf "${rescue}.tar.gz" "$(basename "${rescue}")" 2>/dev/null || true
-echo "Removed. Rescue copy: ${rescue}.tar.gz"
+while read -r user; do
+  [[ -z "$user" ]] && continue
+  pkill -KILL -u "$user" 2>/dev/null || true
+  userdel -r "$user" 2>/dev/null || true
+done <<< "$managed_users"
+
+groupdel cpusers 2>/dev/null || true
+groupdel panelusers 2>/dev/null || true
+userdel custompanel 2>/dev/null || true
+groupdel custompanel 2>/dev/null || true
+
+rm -f /etc/ssh/sshd_config.d/98-custom-panel-deny.conf
+rm -f /etc/ssh/sshd_config_custom_panel
+rm -f /etc/pam.d/custom-panel-sshd
+rm -rf /opt/custom-panel /var/lib/custom-panel /run/custom-panel /etc/custom-panel
+rm -f /etc/tmpfiles.d/custom-panel.conf
+systemctl daemon-reload
+/usr/sbin/sshd -t && systemctl restart ssh
+echo "Custom Panel removed."
